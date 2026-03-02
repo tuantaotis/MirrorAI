@@ -28,3 +28,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+test_data/
+*.egg-info/
+2026-*.txt
