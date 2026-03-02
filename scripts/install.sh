@@ -34,23 +34,98 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-# ── Logging ───────────────────────────────────────────────────────────────
+# ── Progress Bar ────────────────────────────────────────────────────────
 STEP=0
+BAR_WIDTH=40
+
+draw_progress() {
+    local current=$1 total=$2 label="$3"
+    local pct=$((current * 100 / total))
+    local filled=$((current * BAR_WIDTH / total))
+    local empty=$((BAR_WIDTH - filled))
+
+    # Build bar
+    local bar=""
+    for ((b=0; b<filled; b++)); do bar+="█"; done
+    for ((b=0; b<empty; b++)); do bar+="░"; done
+
+    # Color based on progress
+    local color="$CYAN"
+    [ "$pct" -ge 50 ] && color="$YELLOW"
+    [ "$pct" -ge 80 ] && color="$GREEN"
+
+    printf "\r  ${color}${bar}${NC} ${BOLD}%3d%%${NC}  ${DIM}%s${NC}" "$pct" "$label"
+}
+
+# Persistent status line at bottom
+STATUS_LINE=""
+update_status() {
+    STATUS_LINE="$1"
+    printf "\r\033[K  ${CYAN}⟳${NC} ${DIM}%s${NC}" "$STATUS_LINE"
+}
+clear_status() {
+    printf "\r\033[K"
+}
+
+# ── Logging ───────────────────────────────────────────────────────────────
 log()  { echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} $1"; echo "[$(date +%H:%M:%S)] $1" >> "$LOG" 2>/dev/null || true; }
-ok()   { echo -e "${GREEN}  ✓${NC} $1"; echo "  ✓ $1" >> "$LOG" 2>/dev/null || true; }
-warn() { echo -e "${YELLOW}  ⚠${NC} $1"; echo "  ⚠ $1" >> "$LOG" 2>/dev/null || true; }
-err()  { echo -e "${RED}  ✗${NC} $1"; echo "  ✗ $1" >> "$LOG" 2>/dev/null || true; }
-step() { STEP=$((STEP + 1)); echo ""; log "${BOLD}[$STEP/$TOTAL_STEPS]${NC} $1"; }
+ok()   { clear_status; echo -e "${GREEN}  ✓${NC} $1"; echo "  ✓ $1" >> "$LOG" 2>/dev/null || true; }
+warn() { clear_status; echo -e "${YELLOW}  ⚠${NC} $1"; echo "  ⚠ $1" >> "$LOG" 2>/dev/null || true; }
+err()  { clear_status; echo -e "${RED}  ✗${NC} $1"; echo "  ✗ $1" >> "$LOG" 2>/dev/null || true; }
+step() {
+    STEP=$((STEP + 1))
+    echo ""
+    draw_progress "$STEP" "$TOTAL_STEPS" "$1"
+    echo ""
+    log "${BOLD}[$STEP/$TOTAL_STEPS]${NC} $1"
+}
+
+# Spinner with elapsed time
 spin() {
     local pid=$1 msg=$2
     local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
+    local i=0 elapsed=0
     while kill -0 "$pid" 2>/dev/null; do
-        printf "\r${CYAN}  ${frames[$i]}${NC} %s" "$msg"
+        local mins=$((elapsed / 60))
+        local secs=$((elapsed % 60))
+        local time_str=""
+        if [ $mins -gt 0 ]; then
+            time_str="${mins}m${secs}s"
+        else
+            time_str="${secs}s"
+        fi
+        printf "\r  ${CYAN}${frames[$i]}${NC} %s ${DIM}(%s)${NC}\033[K" "$msg" "$time_str"
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep 0.1
+        elapsed=$(awk "BEGIN{print $elapsed + 0.1}" | cut -d. -f1)
+        # increment integer seconds
+        if (( (RANDOM % 10) == 0 )); then
+            elapsed=$((elapsed + 1))
+        fi
+    done
+    printf "\r\033[K"
+}
+
+# Run command with spinner + elapsed time
+run_with_status() {
+    local msg="$1"
+    shift
+    "$@" >> "$LOG" 2>&1 &
+    local pid=$!
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    local start_ts=$SECONDS
+    while kill -0 "$pid" 2>/dev/null; do
+        local elapsed=$((SECONDS - start_ts))
+        local mins=$((elapsed / 60))
+        local secs=$((elapsed % 60))
+        printf "\r  ${CYAN}${frames[$i]}${NC} %s ${DIM}(%dm%02ds)${NC}\033[K" "$msg" "$mins" "$secs"
         i=$(( (i + 1) % ${#frames[@]} ))
         sleep 0.1
     done
-    printf "\r"
+    printf "\r\033[K"
+    wait "$pid"
+    return $?
 }
 
 # ── Error handler ─────────────────────────────────────────────────────────
@@ -137,7 +212,7 @@ if command -v brew &>/dev/null; then
     ok "Homebrew already installed ($(brew --version | head -1))"
 else
     log "Installing Homebrew (this may take a minute)..."
-    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" >> "$LOG" 2>&1
+    run_with_status "Installing Homebrew..." env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
     # Add brew to PATH for Apple Silicon
     if [ "$IS_APPLE_SILICON" = true ] && [ -f /opt/homebrew/bin/brew ]; then
@@ -183,8 +258,10 @@ BREW_PACKAGES=""
 [ "$NEED_GIT" = true ] && BREW_PACKAGES="$BREW_PACKAGES git"
 
 if [ -n "$BREW_PACKAGES" ]; then
-    log "Installing:$BREW_PACKAGES"
-    brew install $BREW_PACKAGES >> "$LOG" 2>&1
+    for pkg in $BREW_PACKAGES; do
+        run_with_status "Installing $pkg via Homebrew..." brew install "$pkg"
+        ok "$pkg installed"
+    done
     # Link node if needed
     if [ "$NEED_NODE" = true ]; then
         brew link node@20 --force >> "$LOG" 2>&1 || true
@@ -204,8 +281,7 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     ok "Docker already running ($(docker --version | awk '{print $3}' | tr -d ','))"
 else
     if ! command -v docker &>/dev/null; then
-        log "Installing Docker Desktop..."
-        brew install --cask docker >> "$LOG" 2>&1
+        run_with_status "Installing Docker Desktop..." brew install --cask docker
     fi
 
     # Auto-start Docker Desktop
@@ -215,16 +291,20 @@ else
     # Wait for Docker to be ready (max 60s)
     DOCKER_WAIT=0
     DOCKER_MAX=60
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local fi=0
     while ! docker info &>/dev/null 2>&1; do
         if [ $DOCKER_WAIT -ge $DOCKER_MAX ]; then
+            printf "\r\033[K"
             warn "Docker not ready after ${DOCKER_MAX}s — will retry ChromaDB later"
             break
         fi
-        printf "\r${CYAN}  ⏳${NC} Waiting for Docker to start... (%ds/%ds)" "$DOCKER_WAIT" "$DOCKER_MAX"
+        printf "\r  ${CYAN}${frames[$fi]}${NC} Waiting for Docker to start... ${DIM}(%ds/%ds)${NC}\033[K" "$DOCKER_WAIT" "$DOCKER_MAX"
+        fi=$(( (fi + 1) % ${#frames[@]} ))
         sleep 2
         DOCKER_WAIT=$((DOCKER_WAIT + 2))
     done
-    printf "\r"
+    printf "\r\033[K"
 
     if docker info &>/dev/null 2>&1; then
         ok "Docker Desktop running"
@@ -239,8 +319,7 @@ step "Setting up Ollama..."
 if command -v ollama &>/dev/null; then
     ok "Ollama already installed"
 else
-    log "Installing Ollama..."
-    brew install ollama >> "$LOG" 2>&1
+    run_with_status "Installing Ollama..." brew install ollama
     ok "Ollama installed"
 fi
 
@@ -278,8 +357,7 @@ step "Downloading AI models..."
 if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
     ok "nomic-embed-text already downloaded"
 else
-    log "Pulling nomic-embed-text (~270MB)..."
-    ollama pull nomic-embed-text >> "$LOG" 2>&1 && \
+    run_with_status "Pulling nomic-embed-text (~270MB)..." ollama pull nomic-embed-text && \
         ok "nomic-embed-text (embedding)" || \
         warn "Pull failed — will retry: ollama pull nomic-embed-text"
 fi
@@ -288,8 +366,7 @@ fi
 if ollama list 2>/dev/null | grep -q "$SELECTED_MODEL"; then
     ok "$SELECTED_MODEL already downloaded"
 else
-    log "Pulling $SELECTED_MODEL ($MODEL_SIZE) — this may take several minutes..."
-    ollama pull "$SELECTED_MODEL" >> "$LOG" 2>&1 && \
+    run_with_status "Pulling $SELECTED_MODEL ($MODEL_SIZE)..." ollama pull "$SELECTED_MODEL" && \
         ok "$SELECTED_MODEL (chat)" || \
         warn "Pull failed — will retry: ollama pull $SELECTED_MODEL"
 fi
@@ -308,7 +385,7 @@ if [ -d "$REPO_DIR/.git" ]; then
 else
     log "Cloning repository..."
     rm -rf "$REPO_DIR" 2>/dev/null || true
-    git clone "$REPO_URL" "$REPO_DIR" >> "$LOG" 2>&1
+    run_with_status "Cloning MirrorAI repository..." git clone "$REPO_URL" "$REPO_DIR"
     ok "Repository cloned"
 fi
 
@@ -318,8 +395,8 @@ fi
 step "Installing Node.js dependencies..."
 
 cd "$REPO_DIR"
-npm install --workspaces >> "$LOG" 2>&1
-npm run build --workspaces >> "$LOG" 2>&1 || true
+run_with_status "npm install (workspaces)..." npm install --workspaces
+run_with_status "npm build (workspaces)..." npm run build --workspaces || true
 ok "Node.js packages installed"
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -336,10 +413,10 @@ fi
 
 # Activate and install
 source .venv/bin/activate
-pip install --upgrade pip >> "$LOG" 2>&1
-pip install -e ".[dev]" >> "$LOG" 2>&1 || pip install -e . >> "$LOG" 2>&1 || {
-    # Fallback: install core deps manually
-    pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich >> "$LOG" 2>&1
+run_with_status "Upgrading pip..." pip install --upgrade pip
+run_with_status "Installing Python packages..." pip install -e ".[dev]" || \
+    run_with_status "Installing Python packages (fallback)..." pip install -e . || {
+    run_with_status "Installing core deps manually..." pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich
 }
 ok "Python packages installed"
 
