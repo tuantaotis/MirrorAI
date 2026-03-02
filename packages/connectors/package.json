@@ -1,0 +1,19 @@
+{
+  "name": "@mirrorai/connectors",
+  "version": "1.0.0",
+  "description": "MirrorAI platform connectors (Telegram, Zalo, extensible)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "zca-js": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zca-js": { "optional": true }
+  }
+}

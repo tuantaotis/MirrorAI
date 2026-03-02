@@ -1,0 +1,60 @@
+# MirrorAI Configuration
+# All settings can be overridden via .env or environment variables
+
+app:
+  name: "MirrorAI"
+  version: "1.0.0"
+  data_dir: "~/.mirrorai"
+  log_level: "info"  # debug | info | warn | error
+
+# Platform connectors
+platforms:
+  telegram:
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    export_path: ""  # Path to Telegram Desktop JSON export
+  zalo:
+    enabled: false
+    mode: "personal"  # "bot" | "personal"
+    bot_token: "${ZALO_BOT_TOKEN}"
+
+# AI Model configuration
+model:
+  # LLM for chat generation (via OpenClaw)
+  primary: "ollama/qwen2.5:14b"
+  fallback: "anthropic/claude-sonnet-4-6"
+  temperature: 0.8
+
+# Embedding configuration
+embedding:
+  provider: "ollama"  # "ollama" | "openai"
+  model: "nomic-embed-text"
+  # openai_model: "text-embedding-ada-002"  # if provider=openai
+  batch_size: 100
+
+# Vector database
+vectordb:
+  provider: "chromadb"
+  url: "http://localhost:8000"
+  collection: "user_messages"
+
+# Data pipeline
+pipeline:
+  chunk_size: 512         # tokens
+  chunk_overlap: 50       # tokens
+  min_message_words: 3    # skip messages shorter than this
+  max_history_days: 365   # how far back to collect
+
+# Persona
+persona:
+  confidence_threshold: 0.65  # 0.0 - 1.0
+  response_delay_min_ms: 800
+  response_delay_max_ms: 8000
+  auto_reply: true
+  manual_review_queue: true
+  update_interval_min: 30     # minutes between persona rebuilds
+
+# OpenClaw
+openclaw:
+  workspace: "./workspace"
+  gateway_port: 18789

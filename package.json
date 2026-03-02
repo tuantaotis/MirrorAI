@@ -1,0 +1,25 @@
+{
+  "name": "mirrorai",
+  "version": "1.0.0",
+  "description": "AI Clone — mirror your persona across chat platforms, powered by OpenClaw",
+  "private": true,
+  "workspaces": [
+    "packages/connectors",
+    "packages/openclaw-plugin",
+    "apps/cli"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces --if-present",
+    "lint": "eslint . --ext .ts",
+    "clean": "rm -rf packages/*/dist apps/*/dist"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/user/mirrorai"
+  }
+}

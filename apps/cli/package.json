@@ -1,0 +1,20 @@
+{
+  "name": "@mirrorai/cli",
+  "version": "1.0.0",
+  "description": "MirrorAI CLI — setup, ingest, and manage your AI clone",
+  "type": "module",
+  "bin": {
+    "mirrorai": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "inquirer": "^9.0.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.0",
+    "yaml": "^2.3.0"
+  }
+}

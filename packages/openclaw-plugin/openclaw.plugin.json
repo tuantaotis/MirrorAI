@@ -1,0 +1,51 @@
+{
+  "id": "mirrorai",
+  "name": "MirrorAI",
+  "version": "1.0.0",
+  "description": "AI Clone — mirror your persona across chat platforms",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "chromadb_url": {
+        "type": "string",
+        "default": "http://localhost:8000",
+        "description": "ChromaDB server URL"
+      },
+      "persona_confidence_threshold": {
+        "type": "number",
+        "default": 0.65,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Minimum confidence to auto-reply (0.0 - 1.0)"
+      },
+      "max_rag_results": {
+        "type": "integer",
+        "default": 5,
+        "description": "Number of similar messages to retrieve"
+      },
+      "auto_reply": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable automatic replies"
+      },
+      "manual_review_queue": {
+        "type": "boolean",
+        "default": true,
+        "description": "Queue low-confidence messages for manual review"
+      },
+      "response_delay_min_ms": {
+        "type": "integer",
+        "default": 800,
+        "description": "Minimum response delay (ms) for human-like timing"
+      },
+      "response_delay_max_ms": {
+        "type": "integer",
+        "default": 8000,
+        "description": "Maximum response delay (ms)"
+      }
+    }
+  },
+  "skills": ["skills"],
+  "channels": ["telegram", "zalo", "zalouser"]
+}

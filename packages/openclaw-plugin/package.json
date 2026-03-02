@@ -1,0 +1,11 @@
+{
+  "name": "@mirrorai/openclaw-plugin",
+  "version": "1.0.0",
+  "description": "MirrorAI OpenClaw plugin — skills for AI persona mirroring",
+  "type": "module",
+  "main": "dist/skills/mirror-respond.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  }
+}
