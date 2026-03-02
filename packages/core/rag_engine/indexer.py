@@ -6,6 +6,7 @@ Store, upsert, and manage embeddings in ChromaDB.
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 import chromadb
 
@@ -25,8 +26,11 @@ class VectorIndexer:
         embedder: BaseEmbedder | None = None,
     ):
         url = chromadb_url or os.getenv("CHROMADB_URL", "http://localhost:8000")
-        self.client = chromadb.HttpClient(host=url.split("://")[-1].split(":")[0],
-                                          port=int(url.split(":")[-1]))
+        parsed = urlparse(url)
+        self.client = chromadb.HttpClient(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 8000,
+        )
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},

@@ -60,11 +60,14 @@ class Retriever:
                 )
             )
 
-        logger.info(
-            f"[Retriever] Query: '{query[:50]}...' → "
-            f"{len(contexts)} results, "
-            f"best score: {contexts[0].relevance_score:.3f}" if contexts else "no results"
-        )
+        if contexts:
+            logger.info(
+                f"[Retriever] Query: '{query[:50]}...' → "
+                f"{len(contexts)} results, "
+                f"best score: {contexts[0].relevance_score:.3f}"
+            )
+        else:
+            logger.info(f"[Retriever] Query: '{query[:50]}...' → no results")
         return contexts
 
     def get_confidence(self, contexts: list[RetrievedContext]) -> float:

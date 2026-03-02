@@ -71,63 +71,51 @@ def chunk_messages(
     chunks: list[Chunk] = []
     chunk_id = 0
 
+    def _make_chunk(msgs: list[UniversalMessage], tid: str, cid: int) -> Chunk:
+        return Chunk(
+            id=f"chunk_{cid}",
+            text="\n".join(m.text for m in msgs),
+            messages=list(msgs),
+            metadata={
+                "thread_id": tid,
+                "thread_name": msgs[0].context.thread_name or "",
+                "is_group": msgs[0].context.is_group,
+            },
+        )
+
     for thread_id, thread_msgs in threads.items():
-        current_texts: list[str] = []
         current_msgs: list[UniversalMessage] = []
+        msg_token_cache: list[int] = []
         current_tokens = 0
 
         for msg in thread_msgs:
             msg_tokens = estimate_tokens(msg.text)
 
             # If adding this message would exceed chunk_size, emit current chunk
-            if current_tokens + msg_tokens > chunk_size and current_texts:
-                chunk_text = "\n".join(current_texts)
-                chunks.append(
-                    Chunk(
-                        id=f"chunk_{chunk_id}",
-                        text=chunk_text,
-                        messages=list(current_msgs),
-                        metadata={
-                            "thread_id": thread_id,
-                            "thread_name": current_msgs[0].context.thread_name or "",
-                            "is_group": current_msgs[0].context.is_group,
-                        },
-                    )
-                )
+            if current_tokens + msg_tokens > chunk_size and current_msgs:
+                chunks.append(_make_chunk(current_msgs, thread_id, chunk_id))
                 chunk_id += 1
 
                 # Overlap: keep last N tokens worth of messages
                 overlap_tokens = 0
                 overlap_start = len(current_msgs)
                 for i in range(len(current_msgs) - 1, -1, -1):
-                    overlap_tokens += estimate_tokens(current_msgs[i].text)
+                    overlap_tokens += msg_token_cache[i]
                     if overlap_tokens >= chunk_overlap:
                         overlap_start = i
                         break
 
                 current_msgs = current_msgs[overlap_start:]
-                current_texts = [m.text for m in current_msgs]
-                current_tokens = sum(estimate_tokens(t) for t in current_texts)
+                msg_token_cache = msg_token_cache[overlap_start:]
+                current_tokens = sum(msg_token_cache)
 
-            current_texts.append(msg.text)
             current_msgs.append(msg)
+            msg_token_cache.append(msg_tokens)
             current_tokens += msg_tokens
 
         # Emit final chunk for this thread
-        if current_texts:
-            chunk_text = "\n".join(current_texts)
-            chunks.append(
-                Chunk(
-                    id=f"chunk_{chunk_id}",
-                    text=chunk_text,
-                    messages=list(current_msgs),
-                    metadata={
-                        "thread_id": thread_id,
-                        "thread_name": current_msgs[0].context.thread_name or "",
-                        "is_group": current_msgs[0].context.is_group,
-                    },
-                )
-            )
+        if current_msgs:
+            chunks.append(_make_chunk(current_msgs, thread_id, chunk_id))
             chunk_id += 1
 
     logger.info(
