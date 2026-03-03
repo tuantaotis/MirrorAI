@@ -23,7 +23,20 @@ LOG="$MIRRORAI_HOME/install.log"
 REPO_URL="https://github.com/tuantaotis/MirrorAI.git"
 CHROMADB_PORT=8000
 OLLAMA_PORT=11434
-TOTAL_STEPS=12
+
+# ── Quick Mode Flag ─────────────────────────────────────────────────────
+QUICK_MODE=false
+for arg in "$@"; do
+    case "$arg" in
+        --quick) QUICK_MODE=true ;;
+    esac
+done
+
+if [ "$QUICK_MODE" = true ]; then
+    TOTAL_STEPS=8
+else
+    TOTAL_STEPS=12
+fi
 
 # ── Colors ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -264,6 +277,9 @@ echo ""
 echo -e "${BOLD}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║   🪞 MirrorAI — Smart Installer v${VERSION}       ║${NC}"
 echo -e "${BOLD}║   Auto-detect • Auto-fix • AI-assisted       ║${NC}"
+if [ "$QUICK_MODE" = true ]; then
+echo -e "${BOLD}║   ⚡ QUICK MODE — Phase 1 only (~3-5 min)    ║${NC}"
+fi
 echo -e "${BOLD}╚═══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -521,6 +537,15 @@ step "Setting up container runtime..."
 
 DOCKER_AVAILABLE=false
 
+if [ "$QUICK_MODE" = true ]; then
+    info "Quick mode: skipping container runtime (run 'mirrorai setup full' later)"
+    ok "Container runtime deferred"
+    # Jump to Step 7 equivalent
+fi
+
+if [ "$QUICK_MODE" = false ]; then
+# ── BEGIN FULL MODE: Container Runtime ──
+
 if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     ok "Docker already running ($(docker --version | awk '{print $3}' | tr -d ','))"
     DOCKER_AVAILABLE=true
@@ -589,9 +614,12 @@ else
     fi
 fi
 
+fi # ── END FULL MODE: Container Runtime ──
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 5: Ollama (or Cloud LLM fallback)
 # ═══════════════════════════════════════════════════════════════════════════
+if [ "$QUICK_MODE" = false ]; then
 step "Setting up AI model provider..."
 
 OLLAMA_AVAILABLE=false
@@ -647,34 +675,61 @@ else
     info "To use local AI, upgrade to macOS 14+ (Sonoma)"
     info "Set GEMINI_API_KEY in ~/.mirrorai/.env for cloud mode"
 fi
+fi # ── END FULL MODE: Ollama ──
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 6: Pull AI Models (or configure cloud)
 # ═══════════════════════════════════════════════════════════════════════════
+if [ "$QUICK_MODE" = false ]; then
 step "Setting up AI models..."
 
 if [ "$USE_CLOUD_LLM" = true ]; then
     ok "Cloud mode: no model download needed"
     info "Primary: Gemini 2.5 Flash (free) | Fallback: DeepSeek V3 (\$0.14/1M)"
 else
-    # Embedding model
-    if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-        ok "nomic-embed-text already downloaded"
-    else
-        run_with_status "Pulling nomic-embed-text (~270MB)..." ollama pull nomic-embed-text && \
-            ok "nomic-embed-text (embedding)" || \
-            warn "Pull failed — retry later: ollama pull nomic-embed-text"
-    fi
+    # Pull embedding + chat model in parallel
+    NEED_EMBED=false
+    NEED_CHAT=false
+    ollama list 2>/dev/null | grep -q "nomic-embed-text" || NEED_EMBED=true
+    ollama list 2>/dev/null | grep -q "$SELECTED_MODEL" || NEED_CHAT=true
 
-    # Chat model
-    if ollama list 2>/dev/null | grep -q "$SELECTED_MODEL"; then
-        ok "$SELECTED_MODEL already downloaded"
-    else
+    if [ "$NEED_EMBED" = true ] && [ "$NEED_CHAT" = true ]; then
+        log "Pulling embedding + chat model in parallel..."
+        ollama pull nomic-embed-text >> "$LOG" 2>&1 &
+        EMBED_PID=$!
+        ollama pull "$SELECTED_MODEL" >> "$LOG" 2>&1 &
+        CHAT_PID=$!
+
+        # Spinner while waiting
+        pull_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        pull_i=0
+        pull_start=$SECONDS
+        while kill -0 "$EMBED_PID" 2>/dev/null || kill -0 "$CHAT_PID" 2>/dev/null; do
+            pull_elapsed=$((SECONDS - pull_start))
+            pull_mins=$((pull_elapsed / 60))
+            pull_secs=$((pull_elapsed % 60))
+            printf "\r  ${CYAN}${pull_frames[$pull_i]}${NC} Pulling models in parallel... ${DIM}(%dm%02ds)${NC}\033[K" "$pull_mins" "$pull_secs"
+            pull_i=$(( (pull_i + 1) % ${#pull_frames[@]} ))
+            sleep 0.2
+        done
+        printf "\r\033[K"
+
+        wait "$EMBED_PID" && ok "nomic-embed-text (embedding)" || warn "Pull failed — retry: ollama pull nomic-embed-text"
+        wait "$CHAT_PID" && ok "$SELECTED_MODEL (chat)" || warn "Pull failed — retry: ollama pull $SELECTED_MODEL"
+    elif [ "$NEED_EMBED" = true ]; then
+        run_with_status "Pulling nomic-embed-text (~270MB)..." ollama pull nomic-embed-text && \
+            ok "nomic-embed-text (embedding)" || warn "Pull failed — retry: ollama pull nomic-embed-text"
+    elif [ "$NEED_CHAT" = true ]; then
         run_with_status "Pulling $SELECTED_MODEL ($MODEL_SIZE)..." ollama pull "$SELECTED_MODEL" && \
-            ok "$SELECTED_MODEL (chat)" || \
-            warn "Pull failed — retry later: ollama pull $SELECTED_MODEL"
+            ok "$SELECTED_MODEL (chat)" || warn "Pull failed — retry: ollama pull $SELECTED_MODEL"
+    else
+        ok "nomic-embed-text already downloaded"
+        ok "$SELECTED_MODEL already downloaded"
     fi
 fi
+else
+    info "Quick mode: skipping AI model setup (run 'mirrorai setup models' later)"
+fi # ── END FULL MODE: Model Pull ──
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 7: Clone Repository
@@ -708,47 +763,95 @@ fi
 step "Installing Node.js dependencies..."
 
 cd "$REPO_DIR"
-if run_with_status "npm install (workspaces)..." npm install --workspaces; then
-    ok "npm packages installed"
+
+if [ "$QUICK_MODE" = true ]; then
+    # ── PARALLEL: npm ci + pip install simultaneously ──
+    log "Quick mode: running npm ci + pip install in parallel..."
+
+    # Prepare Python venv first (fast, needed before pip)
+    if [ ! -d ".venv" ]; then
+        python3 -m venv .venv >> "$LOG" 2>&1
+    fi
+    source .venv/bin/activate
+    pip install --upgrade pip >> "$LOG" 2>&1
+
+    # Launch both in parallel
+    (npm ci --workspaces >> "$LOG" 2>&1 || npm install --workspaces >> "$LOG" 2>&1 || npm install >> "$LOG" 2>&1) &
+    NPM_PID=$!
+    (pip install -e ".[dev]" >> "$LOG" 2>&1 || pip install -e . >> "$LOG" 2>&1 || pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich >> "$LOG" 2>&1) &
+    PIP_PID=$!
+
+    # Wait with spinner
+    local_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local_i=0
+    local_start=$SECONDS
+    while kill -0 "$NPM_PID" 2>/dev/null || kill -0 "$PIP_PID" 2>/dev/null; do
+        local_elapsed=$((SECONDS - local_start))
+        local_mins=$((local_elapsed / 60))
+        local_secs=$((local_elapsed % 60))
+        printf "\r  ${CYAN}${local_frames[$local_i]}${NC} npm + pip installing in parallel... ${DIM}(%dm%02ds)${NC}\033[K" "$local_mins" "$local_secs"
+        local_i=$(( (local_i + 1) % ${#local_frames[@]} ))
+        sleep 0.1
+    done
+    printf "\r\033[K"
+
+    wait "$NPM_PID" && ok "npm packages installed" || warn "npm install had issues — check log"
+    wait "$PIP_PID" && ok "Python packages installed" || warn "pip install had issues — check log"
+
+    # Build
+    run_with_status "npm build (workspaces)..." npm run build --workspaces 2>/dev/null || true
+
+    # Skip Step 9 marker (already done above)
+    step "Python dependencies (done in parallel)"
+    ok "Python packages installed in parallel with npm"
 else
-    warn "npm install failed — trying without workspaces..."
-    run_with_status "npm install (flat)..." npm install || {
-        diagnose_and_fix "npm install" "$?" ""
-        err "npm install failed"
-    }
-fi
-run_with_status "npm build (workspaces)..." npm run build --workspaces 2>/dev/null || true
+    # ── SEQUENTIAL: original flow ──
+    if run_with_status "npm install (workspaces)..." npm install --workspaces; then
+        ok "npm packages installed"
+    else
+        warn "npm install failed — trying without workspaces..."
+        run_with_status "npm install (flat)..." npm install || {
+            diagnose_and_fix "npm install" "$?" ""
+            err "npm install failed"
+        }
+    fi
+    run_with_status "npm build (workspaces)..." npm run build --workspaces 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 9: Python Dependencies
 # ═══════════════════════════════════════════════════════════════════════════
-step "Installing Python dependencies..."
+    step "Installing Python dependencies..."
 
-cd "$REPO_DIR"
+    cd "$REPO_DIR"
 
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv >> "$LOG" 2>&1
-fi
+    if [ ! -d ".venv" ]; then
+        python3 -m venv .venv >> "$LOG" 2>&1
+    fi
 
-source .venv/bin/activate
+    source .venv/bin/activate
 
-run_with_status "Upgrading pip..." pip install --upgrade pip
-if run_with_status "Installing Python packages..." pip install -e ".[dev]"; then
-    ok "Python packages installed"
-elif run_with_status "Installing Python packages (no dev)..." pip install -e .; then
-    ok "Python packages installed (without dev deps)"
-else
-    warn "pip install -e failed — installing core deps manually..."
-    run_with_status "Installing core deps..." pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich || {
-        diagnose_and_fix "pip install" "$?" ""
-        err "Python package installation failed"
-    }
-    ok "Core Python packages installed"
+    run_with_status "Upgrading pip..." pip install --upgrade pip
+    if run_with_status "Installing Python packages..." pip install -e ".[dev]"; then
+        ok "Python packages installed"
+    elif run_with_status "Installing Python packages (no dev)..." pip install -e .; then
+        ok "Python packages installed (without dev deps)"
+    else
+        warn "pip install -e failed — installing core deps manually..."
+        run_with_status "Installing core deps..." pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich || {
+            diagnose_and_fix "pip install" "$?" ""
+            err "Python package installation failed"
+        }
+        ok "Core Python packages installed"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 10: ChromaDB
 # ═══════════════════════════════════════════════════════════════════════════
+if [ "$QUICK_MODE" = true ]; then
+    step "ChromaDB (deferred)"
+    info "Quick mode: skipping ChromaDB (run 'mirrorai setup vectordb' later)"
+else
 step "Starting ChromaDB..."
 
 if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
@@ -848,6 +951,7 @@ PLISTEOF
         ok "ChromaDB auto-start configured (launchd)"
     fi
 fi
+fi # ── END FULL/QUICK MODE: ChromaDB ──
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 11: Auto-Generate Config
@@ -962,7 +1066,8 @@ ok "mirrorai.config.yaml generated (model: $MODEL_PRIMARY)"
 # State
 cat > "$MIRRORAI_HOME/state.json" << STATEEOF
 {
-  "state": "READY",
+  "state": "$([ "$QUICK_MODE" = true ] && echo "QUICK_READY" || echo "READY")",
+  "install_mode": "$([ "$QUICK_MODE" = true ] && echo "quick" || echo "full")",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "version": "$VERSION",
   "compatibility_tier": $COMPAT_TIER,
@@ -1013,49 +1118,74 @@ log "${BOLD}Running health check...${NC}"
 HC_PASS=0
 HC_TOTAL=0
 
-# Check Ollama (only if expected)
-if [ "$CAN_OLLAMA" = true ]; then
-    HC_TOTAL=$((HC_TOTAL + 1))
-    if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
-        ok "Ollama        ✅ running"; HC_PASS=$((HC_PASS + 1))
-    else
-        err "Ollama        ❌ not running — run: brew services start ollama"
-    fi
-else
-    info "Ollama        ⏭  skipped (cloud mode)"
-fi
+if [ "$QUICK_MODE" = true ]; then
+    # Quick mode: only check what was installed
+    HC_TOTAL=2
+    HC_PASS=0
 
-# Check ChromaDB
-HC_TOTAL=$((HC_TOTAL + 1))
-if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-    ok "ChromaDB      ✅ running ($CHROMADB_MODE mode)"; HC_PASS=$((HC_PASS + 1))
-else
-    err "ChromaDB      ❌ not running"
-    if [ "$CHROMADB_MODE" = "pip" ]; then
-        info "Start manually: ~/.mirrorai/app/.venv/bin/chroma run --path ~/.mirrorai/data/chromadb --port 8000"
-    fi
-fi
-
-# Check models
-if [ "$USE_CLOUD_LLM" = true ]; then
-    HC_TOTAL=$((HC_TOTAL + 1))
-    info "AI Model      ☁  Cloud mode (Gemini Flash)"; HC_PASS=$((HC_PASS + 1))
-    info "              Set GEMINI_API_KEY in ~/.mirrorai/.env"
-else
-    # Check chat model
-    HC_TOTAL=$((HC_TOTAL + 1))
-    if ollama list 2>/dev/null | grep -q "$SELECTED_MODEL"; then
-        ok "Chat model    ✅ $SELECTED_MODEL"; HC_PASS=$((HC_PASS + 1))
+    # Check Node.js
+    HC_TOTAL=$((HC_TOTAL))
+    if command -v node &>/dev/null; then
+        ok "Node.js       ✅ $(node -v 2>/dev/null)"; HC_PASS=$((HC_PASS + 1))
     else
-        err "Chat model    ❌ run: ollama pull $SELECTED_MODEL"
+        err "Node.js       ❌ not found"
     fi
 
-    # Check embedding
-    HC_TOTAL=$((HC_TOTAL + 1))
-    if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-        ok "Embedding     ✅ nomic-embed-text"; HC_PASS=$((HC_PASS + 1))
+    # Check Python
+    if command -v python3 &>/dev/null; then
+        ok "Python        ✅ $(python3 --version 2>/dev/null | awk '{print $2}')"; HC_PASS=$((HC_PASS + 1))
     else
-        err "Embedding     ❌ run: ollama pull nomic-embed-text"
+        err "Python        ❌ not found"
+    fi
+
+    info "Ollama        ⏭  deferred (run 'mirrorai setup models')"
+    info "ChromaDB      ⏭  deferred (run 'mirrorai setup vectordb')"
+else
+    # Full mode: check everything
+    # Check Ollama (only if expected)
+    if [ "$CAN_OLLAMA" = true ]; then
+        HC_TOTAL=$((HC_TOTAL + 1))
+        if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+            ok "Ollama        ✅ running"; HC_PASS=$((HC_PASS + 1))
+        else
+            err "Ollama        ❌ not running — run: brew services start ollama"
+        fi
+    else
+        info "Ollama        ⏭  skipped (cloud mode)"
+    fi
+
+    # Check ChromaDB
+    HC_TOTAL=$((HC_TOTAL + 1))
+    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+        ok "ChromaDB      ✅ running ($CHROMADB_MODE mode)"; HC_PASS=$((HC_PASS + 1))
+    else
+        err "ChromaDB      ❌ not running"
+        if [ "$CHROMADB_MODE" = "pip" ]; then
+            info "Start manually: ~/.mirrorai/app/.venv/bin/chroma run --path ~/.mirrorai/data/chromadb --port 8000"
+        fi
+    fi
+
+    # Check models
+    if [ "$USE_CLOUD_LLM" = true ]; then
+        HC_TOTAL=$((HC_TOTAL + 1))
+        info "AI Model      ☁  Cloud mode (Gemini Flash)"; HC_PASS=$((HC_PASS + 1))
+        info "              Set GEMINI_API_KEY in ~/.mirrorai/.env"
+    else
+        # Check chat model
+        HC_TOTAL=$((HC_TOTAL + 1))
+        if ollama list 2>/dev/null | grep -q "$SELECTED_MODEL"; then
+            ok "Chat model    ✅ $SELECTED_MODEL"; HC_PASS=$((HC_PASS + 1))
+        else
+            err "Chat model    ❌ run: ollama pull $SELECTED_MODEL"
+        fi
+
+        # Check embedding
+        HC_TOTAL=$((HC_TOTAL + 1))
+        if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+            ok "Embedding     ✅ nomic-embed-text"; HC_PASS=$((HC_PASS + 1))
+        else
+            err "Embedding     ❌ run: ollama pull nomic-embed-text"
+        fi
     fi
 fi
 
@@ -1068,7 +1198,9 @@ SECS=$((ELAPSED % 60))
 
 echo ""
 echo -e "${BOLD}══════════════════════════════════════════════════${NC}"
-if [ $HC_PASS -eq $HC_TOTAL ]; then
+if [ "$QUICK_MODE" = true ]; then
+    echo -e "  ${GREEN}${BOLD}⚡ Quick install complete! (${MINS}m ${SECS}s)${NC}"
+elif [ $HC_PASS -eq $HC_TOTAL ]; then
     echo -e "  ${GREEN}${BOLD}✅ MirrorAI installed successfully!${NC}"
 else
     echo -e "  ${YELLOW}${BOLD}⚠ MirrorAI installed with $((HC_TOTAL - HC_PASS)) warning(s)${NC}"
@@ -1077,17 +1209,32 @@ echo -e "${BOLD}═════════════════════�
 echo ""
 echo -e "  ${DIM}Hardware${NC}     $ARCH | ${RAM_GB}GB RAM | Apple Silicon: $IS_APPLE_SILICON"
 echo -e "  ${DIM}macOS${NC}        $OS_VERSION (Tier $COMPAT_TIER: ${TIER_NAMES[$COMPAT_TIER]})"
+echo -e "  ${DIM}Mode${NC}         $([ "$QUICK_MODE" = true ] && echo "Quick (Phase 1 only)" || echo "Full")"
 echo -e "  ${DIM}Model${NC}        $SELECTED_MODEL ($QUALITY)"
-echo -e "  ${DIM}ChromaDB${NC}     $CHROMADB_MODE mode"
-echo -e "  ${DIM}Health${NC}       $HC_PASS/$HC_TOTAL services OK"
+echo -e "  ${DIM}ChromaDB${NC}     $([ "$QUICK_MODE" = true ] && echo "deferred" || echo "$CHROMADB_MODE mode")"
+echo -e "  ${DIM}Health${NC}       $HC_PASS/$HC_TOTAL checks OK"
 echo -e "  ${DIM}Time${NC}         ${MINS}m ${SECS}s"
 echo -e "  ${DIM}Home${NC}         $MIRRORAI_HOME"
 echo -e "  ${DIM}Log${NC}          $LOG"
 echo ""
-echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "  ${GREEN}1.${NC} mirrorai init                    ${DIM}# Setup wizard${NC}"
-echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
-echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable          ${DIM}# Start AI clone${NC}"
+
+if [ "$QUICK_MODE" = true ]; then
+    echo -e "  ${BOLD}Next steps (Phase 2 — complete setup):${NC}"
+    echo -e "  ${GREEN}1.${NC} mirrorai setup models             ${DIM}# Pull AI models${NC}"
+    echo -e "  ${GREEN}2.${NC} mirrorai setup vectordb            ${DIM}# Start ChromaDB${NC}"
+    echo -e "  ${GREEN}3.${NC} mirrorai setup full                ${DIM}# All of the above${NC}"
+    echo -e "  ${GREEN}4.${NC} mirrorai doctor                    ${DIM}# Health check${NC}"
+    echo ""
+    echo -e "  ${BOLD}Or start using now (cloud mode):${NC}"
+    echo -e "  ${GREEN}1.${NC} mirrorai init                      ${DIM}# Setup wizard${NC}"
+    echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
+    echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable            ${DIM}# Start AI clone${NC}"
+else
+    echo -e "  ${BOLD}Next steps:${NC}"
+    echo -e "  ${GREEN}1.${NC} mirrorai init                    ${DIM}# Setup wizard${NC}"
+    echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
+    echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable          ${DIM}# Start AI clone${NC}"
+fi
 echo ""
 
 if [ "$USE_CLOUD_LLM" = true ]; then

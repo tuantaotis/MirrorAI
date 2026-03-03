@@ -9,6 +9,8 @@ import { initCommand } from "./commands/init.js";
 import { ingestCommand } from "./commands/ingest.js";
 import { statusCommand } from "./commands/status.js";
 import { mirrorCommand } from "./commands/mirror.js";
+import { setupCommand } from "./commands/setup.js";
+import { doctorCommand } from "./commands/doctor.js";
 
 const program = new Command();
 
@@ -21,5 +23,7 @@ program.addCommand(initCommand);
 program.addCommand(ingestCommand);
 program.addCommand(statusCommand);
 program.addCommand(mirrorCommand);
+program.addCommand(setupCommand);
+program.addCommand(doctorCommand);
 
 program.parse();
