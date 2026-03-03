@@ -173,20 +173,40 @@ async def export_telegram_chats(
 
     client = TelegramClient(str(session_path), api_id, api_hash)
 
+    # Custom auth callbacks for progress feedback
+    def code_callback():
+        print_status("📩", "OTP sent! Check your Telegram app.")
+        print_status("⏳", "Waiting for OTP code...")
+        code = input("\n  Enter OTP code: ")
+        print_status("🔄", "Verifying OTP...")
+        return code
+
+    def password_callback():
+        import getpass
+        print_status("🔒", "Two-step verification enabled on this account.")
+        print_status("⏳", "Waiting for password...")
+        pw = getpass.getpass("\n  Enter 2FA password: ")
+        print_status("🔄", "Verifying password...")
+        return pw
+
     if session_exists:
         print_status("🔐", "Session found — auto-connecting...")
         logger.info("Using existing session")
         await client.connect()
 
         if not await client.is_user_authorized():
-            # Session expired → need to re-login
             print_status("⚠", "Session expired — re-login required")
             if not phone:
                 print_status("✗", "Phone required: mirrorai export --phone +84...")
                 sys.exit(1)
-            print_status("📩", "OTP code will be sent via Telegram app...")
-            print()
-            await client.start(phone=phone)
+            print_status("📱", f"Phone: {phone[:4]}***{phone[-3:]}")
+            print_status("📡", "Sending OTP to your Telegram app...")
+            await client.start(
+                phone=phone,
+                code_callback=code_callback,
+                password=password_callback,
+            )
+            print_status("✅", "Re-authenticated successfully!")
         else:
             print_status("✅", "Connected (no OTP needed)")
     else:
@@ -195,11 +215,16 @@ async def export_telegram_chats(
             sys.exit(1)
         masked_phone = phone[:4] + "***" + phone[-3:]
         print_status("📱", f"Phone: {masked_phone}")
-        print_status("📩", "OTP code will be sent via Telegram app...")
-        print()
+        print_status("📡", "Sending OTP to your Telegram app...")
         logger.info(f"First login: {masked_phone}")
-        await client.start(phone=phone)
+        await client.start(
+            phone=phone,
+            code_callback=code_callback,
+            password=password_callback,
+        )
+        print_status("✅", "Authenticated successfully!")
 
+    print_status("🔄", "Loading account info...")
     me = await client.get_me()
     self_name = f"{me.first_name or ''} {me.last_name or ''}".strip()
     self_id = str(me.id)
@@ -207,10 +232,10 @@ async def export_telegram_chats(
     stats["self_name"] = self_name
     stats["self_id"] = self_id
 
-    print_status("✅", f"Login successful!")
     print_status("👤", f"Name: {self_name}")
     print_status("🆔", f"ID: {self_id}")
     print_status("📛", f"Username: @{username}")
+    print()
     logger.info(f"Logged in: {self_name} (@{username}, ID: {self_id})")
 
     # ── Step 2: Scan chats ──

@@ -182,6 +182,92 @@ function getPlatformDef(value: string): PlatformDef {
   return SOCIAL_PLATFORMS.find((p) => p.value === value)!;
 }
 
+/** Detect existing config/data for each platform */
+interface DetectedState {
+  hasSession: boolean;        // Telegram session exists (logged in)
+  hasExportData: boolean;     // Export result.json exists
+  exportMsgCount: number;     // Number of messages in existing export
+  exportChats: number;        // Number of chats exported
+  hasBotToken: boolean;       // Bot token configured in .env
+  botTokenMasked: string;     // Masked token for display
+  hasExportPath: boolean;     // Export path in .env
+  exportPath: string;         // Actual export path
+  selfName: string;           // Logged-in user name
+}
+
+function detectPlatformState(platform: string): DetectedState {
+  const env = loadEnv();
+  const state: DetectedState = {
+    hasSession: false,
+    hasExportData: false,
+    exportMsgCount: 0,
+    exportChats: 0,
+    hasBotToken: false,
+    botTokenMasked: "",
+    hasExportPath: false,
+    exportPath: "",
+    selfName: "",
+  };
+
+  if (platform === "telegram") {
+    // Check session
+    const sessionFile = join(SESSION_DIR, "mirrorai_session.session");
+    state.hasSession = existsSync(sessionFile);
+
+    // Check export data
+    const resultFile = join(EXPORT_DIR, "result.json");
+    if (existsSync(resultFile)) {
+      state.hasExportData = true;
+      try {
+        const data = JSON.parse(readFileSync(resultFile, "utf-8"));
+        state.exportMsgCount = data.messages?.length || 0;
+      } catch { /* ignore */ }
+    }
+
+    // Check export stats for chat count
+    const statsFile = join(EXPORT_DIR, "export_stats.json");
+    if (existsSync(statsFile)) {
+      try {
+        const stats = JSON.parse(readFileSync(statsFile, "utf-8"));
+        state.exportChats = stats.chats_exported || 0;
+        state.exportMsgCount = stats.total_messages || state.exportMsgCount;
+        state.selfName = stats.self_name || "";
+      } catch { /* ignore */ }
+    }
+
+    // Check bot token
+    const token = env.TELEGRAM_BOT_TOKEN || "";
+    if (token.length > 10) {
+      state.hasBotToken = true;
+      state.botTokenMasked = token.slice(0, 8) + "***" + token.slice(-4);
+    }
+
+    // Check export path
+    state.exportPath = env.TELEGRAM_EXPORT_PATH || "";
+    state.hasExportPath = !!state.exportPath && existsSync(state.exportPath);
+
+    // Self name from env
+    if (!state.selfName) state.selfName = env.TELEGRAM_SELF_NAME || "";
+  }
+
+  if (platform === "zalo") {
+    const token = env.ZALO_BOT_TOKEN || "";
+    if (token.length > 5) {
+      state.hasBotToken = true;
+      state.botTokenMasked = token.slice(0, 6) + "***";
+    }
+  }
+
+  // Manual platforms — check env for export path
+  if (["facebook", "instagram", "discord", "whatsapp"].includes(platform)) {
+    const key = `${platform.toUpperCase()}_EXPORT_PATH`;
+    state.exportPath = env[key] || "";
+    state.hasExportPath = !!state.exportPath && existsSync(state.exportPath);
+  }
+
+  return state;
+}
+
 // ─── Auto-export: Telegram ──────────────────────────────────────────────────
 async function autoExportTelegram(): Promise<boolean> {
   console.log("\n  ── Auto-exporting Telegram ──────────────────");
@@ -354,17 +440,65 @@ export const initCommand = new Command("init")
 
         // ── Telegram ─────────────────────────────────────────────────
         if (pv === "telegram") {
+          const detected = detectPlatformState("telegram");
+
+          // Show detected state
+          if (detected.hasSession || detected.hasExportData || detected.hasBotToken) {
+            console.log("  ┌─ Detected existing config ─────────────");
+            if (detected.hasSession) {
+              console.log(`  │  ✅ Logged in${detected.selfName ? `: ${detected.selfName}` : ""}`);
+            }
+            if (detected.hasExportData) {
+              console.log(`  │  ✅ Export data: ${detected.exportMsgCount.toLocaleString()} messages from ${detected.exportChats} chats`);
+            }
+            if (detected.hasBotToken) {
+              console.log(`  │  ✅ Bot token: ${detected.botTokenMasked}`);
+            }
+            console.log("  └──────────────────────────────────────────\n");
+          }
+
+          // Build choices based on detected state
+          const telegramChoices: Array<{ name: string; value: string }> = [];
+
+          if (detected.hasExportData) {
+            telegramChoices.push({
+              name: `Keep existing data (${detected.exportMsgCount.toLocaleString()} messages)`,
+              value: "keep",
+            });
+            telegramChoices.push({
+              name: `Re-export (overwrite — ${detected.hasSession ? "no OTP needed" : "phone + OTP"})`,
+              value: "auto",
+            });
+          } else if (detected.hasSession) {
+            telegramChoices.push({
+              name: "Auto-export (already logged in — no OTP needed)",
+              value: "auto",
+            });
+          } else {
+            telegramChoices.push({
+              name: "Auto-export (phone + OTP, recommended)",
+              value: "auto",
+            });
+          }
+          telegramChoices.push({
+            name: "I already have a JSON export file",
+            value: "file",
+          });
+
           const { telegramSource } = await inquirer.default.prompt([{
             type: "list",
             name: "telegramSource",
             message: "How to get Telegram data?",
-            choices: [
-              { name: "Auto-export (phone + OTP, recommended)", value: "auto" },
-              { name: "I already have a JSON export file", value: "file" },
-            ],
+            choices: telegramChoices,
           }]);
 
-          if (telegramSource === "file") {
+          if (telegramSource === "keep") {
+            platformStates.telegram = {
+              enabled: true, configured: true, dataSource: "file",
+              filePath: detected.exportPath || join(EXPORT_DIR, "result.json"),
+            };
+            console.log(`  ✓ Keeping existing export data\n`);
+          } else if (telegramSource === "file") {
             const { filePath } = await inquirer.default.prompt([{
               type: "input",
               name: "filePath",
@@ -380,7 +514,11 @@ export const initCommand = new Command("init")
             console.log(`  ✓ Will use: ${filePath.trim()}\n`);
           } else {
             platformStates.telegram = { enabled: true, configured: true, dataSource: "auto" };
-            console.log("  ✓ Will auto-export after setup (phone + OTP)\n");
+            if (detected.hasSession) {
+              console.log("  ✓ Will auto-export (already logged in)\n");
+            } else {
+              console.log("  ✓ Will auto-export after setup (phone + OTP)\n");
+            }
           }
         }
 
@@ -411,17 +549,37 @@ export const initCommand = new Command("init")
 
         // ── Manual platforms (Facebook, Instagram, Discord, WhatsApp) ──
         if (["facebook", "instagram", "discord", "whatsapp"].includes(pv)) {
+          const detected = detectPlatformState(pv);
+
+          if (detected.hasExportPath) {
+            console.log(`  ┌─ Detected existing config ─────────────`);
+            console.log(`  │  ✅ Export path: ${detected.exportPath}`);
+            console.log(`  └──────────────────────────────────────────\n`);
+          }
+
+          const manualChoices: Array<{ name: string; value: string }> = [];
+          if (detected.hasExportPath) {
+            manualChoices.push({
+              name: `Keep existing (${detected.exportPath})`,
+              value: "keep",
+            });
+          }
+          manualChoices.push(
+            { name: "Yes, I have the exported file/folder", value: "yes" },
+            { name: "No, show me how to export", value: "no" },
+          );
+
           const { hasFile } = await inquirer.default.prompt([{
             type: "list",
             name: "hasFile",
             message: `Do you have ${def.name} export data?`,
-            choices: [
-              { name: "Yes, I have the exported file/folder", value: "yes" },
-              { name: "No, show me how to export", value: "no" },
-            ],
+            choices: manualChoices,
           }]);
 
-          if (hasFile === "yes") {
+          if (hasFile === "keep") {
+            platformStates[pv] = { enabled: true, configured: true, dataSource: "file", filePath: detected.exportPath };
+            console.log(`  ✓ Keeping existing export path\n`);
+          } else if (hasFile === "yes") {
             const { filePath } = await inquirer.default.prompt([{
               type: "input",
               name: "filePath",
@@ -437,7 +595,6 @@ export const initCommand = new Command("init")
             platformStates[pv] = { enabled: true, configured: true, dataSource: "file", filePath: resolve(filePath.trim()) };
             console.log(`  ✓ Will use: ${filePath.trim()}\n`);
           } else {
-            // Show export guide
             console.log("");
             console.log(`  ┌─ How to export ${def.name} data ─────────────`);
             for (const step of def.manualExportGuide) {
@@ -457,22 +614,46 @@ export const initCommand = new Command("init")
 
       if (botPlatforms.length > 0) {
         console.log("  Step 3/5 — Bot config (for AI auto-reply)\n");
-        console.log("  ℹ To let your AI clone reply on your behalf, MirrorAI needs bot tokens.");
-        console.log("  You can skip this now and configure later.\n");
+
+        // Detect existing bot tokens
+        const tgDetected = detectPlatformState("telegram");
+        const zaloDetected = detectPlatformState("zalo");
+        const hasAnyToken = tgDetected.hasBotToken || zaloDetected.hasBotToken;
+
+        if (hasAnyToken) {
+          console.log("  ┌─ Detected existing bot config ─────────");
+          if (tgDetected.hasBotToken) console.log(`  │  ✅ Telegram bot: ${tgDetected.botTokenMasked}`);
+          if (zaloDetected.hasBotToken) console.log(`  │  ✅ Zalo bot: ${zaloDetected.botTokenMasked}`);
+          console.log("  └──────────────────────────────────────────\n");
+        } else {
+          console.log("  ℹ To let your AI clone reply on your behalf, MirrorAI needs bot tokens.");
+          console.log("  You can skip this now and configure later.\n");
+        }
 
         const { configBot } = await inquirer.default.prompt([{
-          type: "confirm",
+          type: "list",
           name: "configBot",
-          message: "Configure bot tokens now? (needed for auto-reply, optional)",
-          default: false,
+          message: hasAnyToken
+            ? "Bot tokens already configured. What to do?"
+            : "Configure bot tokens now? (needed for auto-reply)",
+          choices: hasAnyToken
+            ? [
+                { name: "Keep existing tokens", value: "keep" },
+                { name: "Update tokens", value: "update" },
+                { name: "Skip (configure later)", value: "skip" },
+              ]
+            : [
+                { name: "Configure now", value: "update" },
+                { name: "Skip (configure later)", value: "skip" },
+              ],
         }]);
 
-        if (configBot) {
+        if (configBot === "update") {
           if (botPlatforms.includes("telegram")) {
             const { token } = await inquirer.default.prompt([{
               type: "input",
               name: "token",
-              message: "Telegram Bot Token (from @BotFather):",
+              message: `Telegram Bot Token${tgDetected.hasBotToken ? ` (current: ${tgDetected.botTokenMasked})` : " (from @BotFather)"}:`,
               validate: (v: string) => v.trim().length > 10 || "Token looks too short",
             }]);
             envUpdates.TELEGRAM_BOT_TOKEN = token.trim();
@@ -482,7 +663,7 @@ export const initCommand = new Command("init")
             const { token } = await inquirer.default.prompt([{
               type: "input",
               name: "token",
-              message: "Zalo Bot/OA Token (for auto-reply):",
+              message: `Zalo Bot/OA Token${zaloDetected.hasBotToken ? ` (current: ${zaloDetected.botTokenMasked})` : ""}:`,
             }]);
             if (token.trim()) {
               envUpdates.ZALO_BOT_TOKEN = token.trim();
@@ -490,6 +671,8 @@ export const initCommand = new Command("init")
             }
           }
           console.log("");
+        } else if (configBot === "keep") {
+          console.log("  ✓ Keeping existing bot tokens\n");
         } else {
           console.log("  ℹ Skip. Configure later: mirrorai init --platform=telegram\n");
         }
