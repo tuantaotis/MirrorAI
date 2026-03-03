@@ -267,6 +267,31 @@ mkdir -p "$MIRRORAI_HOME"/{data,logs,sessions,queue}
 touch "$LOG"
 echo "=== MirrorAI Install v$VERSION Started: $(date) ===" >> "$LOG"
 
+# ── Skip if already installed ─────────────────────────────────────────────
+if [ -f "$MIRRORAI_HOME/state.json" ] && \
+   [ -f "$MIRRORAI_HOME/.env" ] && \
+   [ -f "$MIRRORAI_HOME/mirrorai.config.yaml" ] && \
+   [ -d "$REPO_DIR/.git" ] && \
+   [ -d "$REPO_DIR/node_modules" ] && \
+   [ -d "$REPO_DIR/.venv" ] && \
+   [ -f "$REPO_DIR/apps/cli/dist/index.js" ]; then
+
+    echo ""
+    echo -e "${GREEN}${BOLD}  ✅ MirrorAI is already installed!${NC}"
+    echo ""
+    echo -e "  ${DIM}Home:${NC}    $MIRRORAI_HOME"
+    echo -e "  ${DIM}State:${NC}   $(python3 -c "import json; print(json.load(open('$MIRRORAI_HOME/state.json'))['state'])" 2>/dev/null || echo 'unknown')"
+    echo ""
+    echo -e "  ${BOLD}Commands:${NC}"
+    echo -e "  ${GREEN}mirrorai init${NC}       ${DIM}# Setup wizard${NC}"
+    echo -e "  ${GREEN}mirrorai doctor${NC}     ${DIM}# Health check${NC}"
+    echo -e "  ${GREEN}mirrorai status${NC}     ${DIM}# Current status${NC}"
+    echo ""
+    echo -e "  ${DIM}To reinstall: rm -rf ~/.mirrorai && rerun this script${NC}"
+    echo ""
+    exit 0
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 1: Detect Hardware + macOS Compatibility Tier
 # ═══════════════════════════════════════════════════════════════════════════
@@ -636,15 +661,64 @@ ok "State initialized"
 # ═══════════════════════════════════════════════════════════════════════════
 step "Installing CLI..."
 
-cd "$REPO_DIR/apps/cli" 2>/dev/null && {
-    npm link >> "$LOG" 2>&1 || {
-        SHELL_PROFILE="$HOME/.zprofile"
-        if ! grep -q 'mirrorai' "$SHELL_PROFILE" 2>/dev/null; then
-            echo "export PATH=\"$REPO_DIR/apps/cli/node_modules/.bin:\$PATH\"" >> "$SHELL_PROFILE"
+cd "$REPO_DIR/apps/cli" 2>/dev/null || { warn "CLI directory not found"; }
+
+CLI_LINKED=false
+
+# Method 1: npm link (creates global symlink)
+if npm link >> "$LOG" 2>&1; then
+    CLI_LINKED=true
+    ok "CLI linked globally via npm"
+fi
+
+# Method 2: Create shell wrapper in /usr/local/bin (fallback)
+if [ "$CLI_LINKED" = false ]; then
+    WRAPPER="/usr/local/bin/mirrorai"
+    cat > "$WRAPPER" 2>/dev/null << WRAPPEREOF || true
+#!/usr/bin/env bash
+exec node "$REPO_DIR/apps/cli/dist/index.js" "\$@"
+WRAPPEREOF
+    chmod +x "$WRAPPER" 2>/dev/null && {
+        CLI_LINKED=true
+        ok "CLI installed to /usr/local/bin/mirrorai"
+    } || true
+fi
+
+# Method 3: Add to PATH via shell profile (last resort)
+if [ "$CLI_LINKED" = false ]; then
+    # Create wrapper in ~/.mirrorai/bin/
+    mkdir -p "$MIRRORAI_HOME/bin"
+    cat > "$MIRRORAI_HOME/bin/mirrorai" << WRAPPEREOF
+#!/usr/bin/env bash
+exec node "$REPO_DIR/apps/cli/dist/index.js" "\$@"
+WRAPPEREOF
+    chmod +x "$MIRRORAI_HOME/bin/mirrorai"
+
+    # Add to all common shell profiles
+    for PROFILE in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do
+        if [ -f "$PROFILE" ] || [ "$PROFILE" = "$HOME/.zprofile" ]; then
+            if ! grep -q 'mirrorai/bin' "$PROFILE" 2>/dev/null; then
+                echo '' >> "$PROFILE"
+                echo '# MirrorAI CLI' >> "$PROFILE"
+                echo "export PATH=\"$MIRRORAI_HOME/bin:\$PATH\"" >> "$PROFILE"
+            fi
         fi
-    }
-    ok "CLI installed (mirrorai command available)"
-} || warn "CLI directory not found — skipping"
+    done
+
+    # Also export for current session
+    export PATH="$MIRRORAI_HOME/bin:$PATH"
+
+    CLI_LINKED=true
+    ok "CLI installed to $MIRRORAI_HOME/bin/mirrorai"
+fi
+
+# Verify CLI works
+if command -v mirrorai &>/dev/null || [ -x "$MIRRORAI_HOME/bin/mirrorai" ]; then
+    ok "CLI ready — run 'mirrorai init' to get started"
+else
+    warn "CLI installed but may need: source ~/.zprofile"
+    info "Or run directly: node $REPO_DIR/apps/cli/dist/index.js init"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 8: Generate Phase 2 script + launch background setup
