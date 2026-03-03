@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 MirrorAI — Telegram Auto Exporter
-Tự động export chat history từ Telegram qua MTProto API (Telethon).
-100% local, không gửi data đi đâu.
+Auto-export chat history from Telegram via MTProto API (Telethon).
+100% local, no data leaves your machine.
 
-User chỉ cần: số điện thoại + OTP.
+User only needs: phone number + OTP.
 
 Usage:
     python -m packages.core.telegram_exporter \
@@ -38,7 +38,7 @@ DEFAULT_API_HASH = "d524b414d21f4d37f08684c1df41ac9c"
 def print_header():
     print("\n╔═══════════════════════════════════════════════════╗")
     print("║       🪞 MirrorAI — Telegram Auto Exporter        ║")
-    print("║       100% Local • Dữ liệu không rời máy bạn      ║")
+    print("║       100% Local • Your data never leaves your machine ║")
     print("╚═══════════════════════════════════════════════════╝\n")
 
 
@@ -55,30 +55,30 @@ def print_status(icon: str, text: str, indent: int = 2):
 
 
 def print_chat_progress(index: int, total: int, name: str, chat_type: str, msg_count: int, elapsed: float):
-    """Hiển thị progress cho từng chat đang export."""
+    """Display progress for each chat being exported."""
     type_icon = {"personal_chat": "👤", "private_group": "👥", "private_supergroup": "🏢"}.get(chat_type, "💬")
     bar_width = 20
     filled = int(bar_width * index / total)
     bar = "█" * filled + "░" * (bar_width - filled)
-    # Truncate name nếu quá dài
+    # Truncate name if too long
     display_name = name[:25] + "..." if len(name) > 25 else name
-    print(f"  {bar} [{index}/{total}] {type_icon} {display_name} — {msg_count:,} tin nhắn ({elapsed:.1f}s)")
+    print(f"  {bar} [{index}/{total}] {type_icon} {display_name} — {msg_count:,} messages ({elapsed:.1f}s)")
 
 
 def print_summary_table(stats: dict, duration: float):
-    """Bảng tổng kết chi tiết."""
+    """Detailed summary table."""
     print(f"\n  ╔══════════════════════════════════════════════════╗")
-    print(f"  ║              📊 KẾT QUẢ EXPORT                    ║")
+    print(f"  ║              📊 EXPORT RESULTS                    ║")
     print(f"  ╠══════════════════════════════════════════════════╣")
-    print(f"  ║  👤 Tài khoản:  {stats['self_name']:<33}║")
+    print(f"  ║  👤 Account:  {stats['self_name']:<33}║")
     print(f"  ║  💬 Chats:      {stats['chats_exported']:<33}║")
-    print(f"  ║  📨 Tin nhắn:   {stats['total_messages']:>10,}{'':<22}║")
-    print(f"  ║  ⏱  Thời gian:  {duration:.1f}s{'':<29}║")
-    print(f"  ║  📁 Dung lượng: {stats.get('file_size_mb', '?')} MB{'':<27}║")
+    print(f"  ║  📨 Messages:   {stats['total_messages']:>10,}{'':<22}║")
+    print(f"  ║  ⏱  Duration:  {duration:.1f}s{'':<29}║")
+    print(f"  ║  📁 Size: {stats.get('file_size_mb', '?')} MB{'':<27}║")
     print(f"  ╠══════════════════════════════════════════════════╣")
 
     if stats.get("files"):
-        print(f"  ║  📋 Chi tiết từng chat:                          ║")
+        print(f"  ║  📋 Chat details:                          ║")
         print(f"  ╠──────────────────────────────────────────────────╣")
         # Top 10 chats by message count
         sorted_files = sorted(stats["files"], key=lambda x: x["messages"], reverse=True)
@@ -88,17 +88,17 @@ def print_summary_table(stats: dict, duration: float):
             count = f"{f['messages']:,}"
             print(f"  ║  {type_icon} {name:<30} {count:>8} msg  ║")
         if len(sorted_files) > 15:
-            print(f"  ║  ... và {len(sorted_files) - 15} chats khác{'':<30}║")
+            print(f"  ║  ... and {len(sorted_files) - 15} more chats{'':<30}║")
 
     print(f"  ╠══════════════════════════════════════════════════╣")
     print(f"  ║  📂 Output: {str(stats.get('combined_file', ''))[:36]:<37}║")
     print(f"  ║  📄 Log:    ~/.mirrorai/logs/exporter.log        ║")
 
     if stats.get("errors"):
-        print(f"  ║  ⚠  Lỗi:    {len(stats['errors'])} chats bị lỗi{'':<27}║")
+        print(f"  ║  ⚠  Errors:  {len(stats['errors'])} chats failed{'':<27}║")
 
     print(f"  ╠══════════════════════════════════════════════════╣")
-    print(f"  ║  ▶ Tiếp theo: mirrorai ingest                    ║")
+    print(f"  ║  ▶ Next: mirrorai ingest                    ║")
     print(f"  ╚══════════════════════════════════════════════════╝\n")
 
 
@@ -122,7 +122,7 @@ async def export_telegram_chats(
 ) -> dict:
     """
     Export Telegram chat history to local JSON files.
-    Lần đầu cần SĐT + OTP. Lần sau tự động dùng session đã lưu.
+    First time requires phone + OTP. Subsequent runs use saved session.
     """
     try:
         from telethon import TelegramClient
@@ -135,7 +135,7 @@ async def export_telegram_chats(
             MessageMediaDocument,
         )
     except ImportError:
-        logger.error("Telethon chưa cài. Chạy: pip install telethon")
+        logger.error("Telethon not installed. Run: pip install telethon")
         sys.exit(1)
 
     total_start = time.time()
@@ -167,35 +167,35 @@ async def export_telegram_chats(
     }
 
     # ── Step 1: Connect ──
-    print_step(1, 5, "Kết nối Telegram...")
+    print_step(1, 5, "Connecting to Telegram...")
 
     session_exists = session_path.with_suffix(".session").exists()
 
     client = TelegramClient(str(session_path), api_id, api_hash)
 
     if session_exists:
-        print_status("🔐", "Session đã lưu — đăng nhập tự động...")
+        print_status("🔐", "Session found — auto-connecting...")
         logger.info("Using existing session")
         await client.connect()
 
         if not await client.is_user_authorized():
-            # Session hết hạn → cần login lại
-            print_status("⚠", "Session hết hạn — cần đăng nhập lại")
+            # Session expired → need to re-login
+            print_status("⚠", "Session expired — re-login required")
             if not phone:
-                print_status("✗", "Cần SĐT: mirrorai export --phone +84...")
+                print_status("✗", "Phone required: mirrorai export --phone +84...")
                 sys.exit(1)
-            print_status("📩", "Mã OTP sẽ gửi qua Telegram app...")
+            print_status("📩", "OTP code will be sent via Telegram app...")
             print()
             await client.start(phone=phone)
         else:
-            print_status("✅", "Đã kết nối (không cần OTP)")
+            print_status("✅", "Connected (no OTP needed)")
     else:
         if not phone:
-            print_status("✗", "Lần đầu cần SĐT: mirrorai export --phone +84...")
+            print_status("✗", "First time — phone required: mirrorai export --phone +84...")
             sys.exit(1)
         masked_phone = phone[:4] + "***" + phone[-3:]
-        print_status("📱", f"Số điện thoại: {masked_phone}")
-        print_status("📩", "Mã OTP sẽ gửi qua Telegram app...")
+        print_status("📱", f"Phone: {masked_phone}")
+        print_status("📩", "OTP code will be sent via Telegram app...")
         print()
         logger.info(f"First login: {masked_phone}")
         await client.start(phone=phone)
@@ -207,14 +207,14 @@ async def export_telegram_chats(
     stats["self_name"] = self_name
     stats["self_id"] = self_id
 
-    print_status("✅", f"Đăng nhập thành công!")
-    print_status("👤", f"Tên: {self_name}")
+    print_status("✅", f"Login successful!")
+    print_status("👤", f"Name: {self_name}")
     print_status("🆔", f"ID: {self_id}")
     print_status("📛", f"Username: @{username}")
     logger.info(f"Logged in: {self_name} (@{username}, ID: {self_id})")
 
     # ── Step 2: Scan chats ──
-    print_step(2, 5, "Quét danh sách chat...")
+    print_step(2, 5, "Scanning chat list...")
 
     dialogs = await client.get_dialogs()
 
@@ -254,17 +254,17 @@ async def export_telegram_chats(
 
         exportable.append(dialog)
 
-    print_status("📊", f"Tổng: {len(dialogs)} mục")
-    print_status("👤", f"Chat cá nhân: {private_chats}")
-    print_status("👥", f"Nhóm: {groups}")
-    print_status("📢", f"Kênh: {channels} (bỏ qua)")
-    print_status("🤖", f"Bot: {bots} (bỏ qua)")
-    print_status("📥", f"Sẽ export: {len(exportable)} chats (filter: {chat_filter})")
+    print_status("📊", f"Total: {len(dialogs)} items")
+    print_status("👤", f"Private chats: {private_chats}")
+    print_status("👥", f"Groups: {groups}")
+    print_status("📢", f"Channels: {channels} (skipped)")
+    print_status("🤖", f"Bot: {bots} (skipped)")
+    print_status("📥", f"Will export: {len(exportable)} chats (filter: {chat_filter})")
 
     logger.info(f"Dialogs: {len(dialogs)} total, {len(exportable)} exportable")
 
     # ── Step 3: Export messages ──
-    print_step(3, 5, f"Đang export {len(exportable)} chats...")
+    print_step(3, 5, f"Exporting {len(exportable)} chats...")
     print()
 
     for idx, dialog in enumerate(exportable, 1):
@@ -337,7 +337,7 @@ async def export_telegram_chats(
             logger.warning(err_msg)
             stats["errors"].append(err_msg)
             print_chat_progress(idx, len(exportable), chat_name, chat_type, 0, time.time() - chat_start)
-            print_status("⚠", f"Lỗi: {str(e)[:60]}", indent=3)
+            print_status("⚠", f"Error: {str(e)[:60]}", indent=3)
             continue
 
         chat_elapsed = time.time() - chat_start
@@ -377,7 +377,7 @@ async def export_telegram_chats(
         logger.info(f"Exported: {chat_name} ({chat_type}) — {msg_count} messages in {chat_elapsed:.1f}s")
 
     # ── Step 4: Merge files ──
-    print_step(4, 5, "Gộp dữ liệu...")
+    print_step(4, 5, "Merging data...")
 
     all_messages = []
     for file_info in stats["files"]:
@@ -406,10 +406,10 @@ async def export_telegram_chats(
     stats["combined_file"] = str(combined_path)
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    print_status("✅", f"Gộp {stats['total_messages']:,} tin nhắn → result.json ({stats['file_size_mb']} MB)")
+    print_status("✅", f"Merged {stats['total_messages']:,} messages → result.json ({stats['file_size_mb']} MB)")
 
     # ── Step 5: Save & Cleanup ──
-    print_step(5, 5, "Lưu kết quả...")
+    print_step(5, 5, "Saving results...")
 
     stats_path = output_path / "export_stats.json"
     with open(stats_path, "w") as f:
@@ -419,7 +419,7 @@ async def export_telegram_chats(
     print_status("📄", f"Log: {log_file}")
 
     await client.disconnect()
-    print_status("🔌", "Đã ngắt kết nối Telegram")
+    print_status("🔌", "Disconnected from Telegram")
 
     total_duration = time.time() - total_start
     logger.info(f"Export complete: {stats['chats_exported']} chats, {stats['total_messages']} messages in {total_duration:.1f}s")
@@ -435,7 +435,7 @@ async def export_telegram_chats(
 
 def main():
     parser = argparse.ArgumentParser(description="MirrorAI Telegram Auto Exporter")
-    parser.add_argument("--phone", default="", help="Phone number (+84...) — chỉ cần lần đầu")
+    parser.add_argument("--phone", default="", help="Phone number (+84...) — only needed first time")
     parser.add_argument("--output", default=os.path.expanduser("~/.mirrorai/data/exports"), help="Output directory")
     parser.add_argument("--limit", default=5000, type=int, help="Max messages per chat")
     parser.add_argument("--filter", default="all", choices=["all", "private", "group"], help="Chat type filter")

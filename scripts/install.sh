@@ -271,7 +271,7 @@ echo "=== MirrorAI Install v$VERSION Started: $(date) ===" >> "$LOG"
 uninstall_mirrorai() {
     echo ""
     echo -e "${BOLD}╔═══════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}║   🗑  MirrorAI — Gỡ cài đặt                  ║${NC}"
+    echo -e "${BOLD}║   🗑  MirrorAI — Uninstall                  ║${NC}"
     echo -e "${BOLD}╚═══════════════════════════════════════════════╝${NC}"
     echo ""
 
@@ -280,7 +280,7 @@ uninstall_mirrorai() {
         data_size=$(du -sh "$MIRRORAI_HOME" 2>/dev/null | awk '{print $1}' || echo "?")
     fi
 
-    echo -e "  ${BOLD}Sẽ xóa:${NC}"
+    echo -e "  ${BOLD}Will remove:${NC}"
     echo -e "  ${DIM}├── ~/.mirrorai/ ($data_size)${NC}"
     [ -d "$MIRRORAI_HOME/data/exports" ] && echo -e "  ${DIM}│   ├── data/exports/ (chat history)${NC}"
     [ -d "$MIRRORAI_HOME/sessions" ] && echo -e "  ${DIM}│   ├── sessions/ (Telegram session)${NC}"
@@ -293,14 +293,14 @@ uninstall_mirrorai() {
     done
 
     echo ""
-    echo -e "  ${YELLOW}⚠ Hành động này không thể hoàn tác!${NC}"
+    echo -e "  ${YELLOW}⚠ This action cannot be undone!${NC}"
     echo ""
-    printf "  Xác nhận gỡ cài đặt? (y/N): "
+    printf "  Confirm uninstall? (y/N): "
     read -r confirm
 
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
         echo ""
-        echo -e "  ${GREEN}✓ Đã hủy. MirrorAI vẫn giữ nguyên.${NC}"
+        echo -e "  ${GREEN}✓ Cancelled. MirrorAI unchanged.${NC}"
         echo ""
         exit 0
     fi
@@ -314,7 +314,7 @@ uninstall_mirrorai() {
         checked_dirs="$checked_dirs
 $dir"
         if [ -f "$dir/mirrorai" ]; then
-            echo -e "  ${DIM}├──${NC} Xóa CLI: $dir/mirrorai"
+            echo -e "  ${DIM}├──${NC} Remove CLI: $dir/mirrorai"
             rm -f "$dir/mirrorai" 2>/dev/null || sudo rm -f "$dir/mirrorai" 2>/dev/null || true
         fi
     done
@@ -327,22 +327,22 @@ $dir"
 
     # Remove entire ~/.mirrorai/ directory (app, data, sessions, logs, config — everything)
     if [ -d "$MIRRORAI_HOME" ]; then
-        echo -e "  ${DIM}├──${NC} Xóa toàn bộ: $MIRRORAI_HOME/"
+        echo -e "  ${DIM}├──${NC} Remove all: $MIRRORAI_HOME/"
         rm -rf "$MIRRORAI_HOME"
     fi
 
     # Verify removal
     if [ ! -d "$MIRRORAI_HOME" ] && ! command -v mirrorai &>/dev/null; then
-        echo -e "  ${DIM}└──${NC} Xác nhận: đã xóa sạch"
+        echo -e "  ${DIM}└──${NC} Verified: clean removal"
     else
-        echo -e "  ${YELLOW}⚠ Có thể còn sót — kiểm tra: which mirrorai && ls ~/.mirrorai${NC}"
+        echo -e "  ${YELLOW}⚠ May have remnants — check: which mirrorai && ls ~/.mirrorai${NC}"
     fi
 
     echo ""
-    echo -e "  ${GREEN}${BOLD}✅ Đã gỡ cài đặt MirrorAI!${NC}"
+    echo -e "  ${GREEN}${BOLD}✅ MirrorAI uninstalled!${NC}"
     echo ""
-    echo -e "  ${DIM}Homebrew packages (node, python) vẫn giữ.${NC}"
-    echo -e "  ${DIM}Cài lại: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/tuantaotis/MirrorAI/main/scripts/install.sh)\"${NC}"
+    echo -e "  ${DIM}Homebrew packages (node, python) kept.${NC}"
+    echo -e "  ${DIM}Reinstall: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/tuantaotis/MirrorAI/main/scripts/install.sh)\"${NC}"
     echo ""
     exit 0
 }
@@ -352,41 +352,41 @@ $dir"
 if [ -d "$REPO_DIR/.git" ] || [ -f "$REPO_DIR/apps/cli/dist/index.js" ] || command -v mirrorai &>/dev/null; then
 
     echo ""
-    echo -e "${GREEN}${BOLD}  ✅ MirrorAI đã được cài đặt!${NC}"
+    echo -e "${GREEN}${BOLD}  ✅ MirrorAI is already installed!${NC}"
     echo ""
 
     local_state=$(python3 -c "import json; print(json.load(open('$MIRRORAI_HOME/state.json'))['state'])" 2>/dev/null || echo "N/A")
     local_version=$(python3 -c "import json; print(json.load(open('$REPO_DIR/apps/cli/package.json'))['version'])" 2>/dev/null || echo "?")
     local_size=$(du -sh "$MIRRORAI_HOME" 2>/dev/null | awk '{print $1}' || echo "?")
-    has_session="Không"
-    [ -f "$MIRRORAI_HOME/sessions/mirrorai_session.session" ] && has_session="Có ✓"
-    has_soul="Không"
-    [ -f "$MIRRORAI_HOME/data/SOUL.md" ] && has_soul="Có ✓"
+    has_session="No"
+    [ -f "$MIRRORAI_HOME/sessions/mirrorai_session.session" ] && has_session="Yes ✓"
+    has_soul="No"
+    [ -f "$MIRRORAI_HOME/data/SOUL.md" ] && has_soul="Yes ✓"
 
     echo -e "  ╔══════════════════════════════════════════════╗"
-    echo -e "  ║            📋 Thông tin cài đặt               ║"
+    echo -e "  ║            📋 Installation Info               ║"
     echo -e "  ╠══════════════════════════════════════════════╣"
     printf   "  ║  📦 Version:    %-29s ║\n" "$local_version"
     echo -e "  ║  📂 Home:       ~/.mirrorai/                  ║"
     printf   "  ║  📊 State:      %-29s ║\n" "$local_state"
-    printf   "  ║  💾 Dung lượng: %-29s ║\n" "$local_size"
+    printf   "  ║  💾 Size: %-29s ║\n" "$local_size"
     printf   "  ║  🔐 Telegram:   %-29s ║\n" "$has_session"
     printf   "  ║  🧠 SOUL.md:    %-29s ║\n" "$has_soul"
     echo -e "  ╠══════════════════════════════════════════════╣"
     echo -e "  ║  ${BOLD}Commands:${NC}                                    ║"
     echo -e "  ║  ${GREEN}mirrorai export${NC}     ${DIM}# Export Telegram${NC}       ║"
-    echo -e "  ║  ${GREEN}mirrorai ingest${NC}     ${DIM}# Nạp dữ liệu${NC}          ║"
-    echo -e "  ║  ${GREEN}mirrorai mirror${NC}     ${DIM}# Bật AI clone${NC}          ║"
+    echo -e "  ║  ${GREEN}mirrorai ingest${NC}     ${DIM}# Ingest data${NC}          ║"
+    echo -e "  ║  ${GREEN}mirrorai mirror${NC}     ${DIM}# Enable AI clone${NC}          ║"
     echo -e "  ║  ${GREEN}mirrorai doctor${NC}     ${DIM}# Health check${NC}          ║"
     echo -e "  ╚══════════════════════════════════════════════╝"
     echo ""
 
-    echo -e "  ${BOLD}Bạn muốn:${NC}"
-    echo -e "    ${BOLD}1)${NC} Giữ nguyên (thoát)"
-    echo -e "    ${BOLD}2)${NC} Cài đặt lại (giữ session + data)"
-    echo -e "    ${BOLD}3)${NC} Gỡ cài đặt (xóa toàn bộ)"
+    echo -e "  ${BOLD}Options:${NC}"
+    echo -e "    ${BOLD}1)${NC} Keep as is (exit)"
+    echo -e "    ${BOLD}2)${NC} Reinstall (keep session + data)"
+    echo -e "    ${BOLD}3)${NC} Uninstall (remove everything)"
     echo ""
-    printf "  Chọn [1]: "
+    printf "  Choose [1]: "
     read -r choice
 
     case "${choice:-1}" in
@@ -417,7 +417,7 @@ if [ -d "$REPO_DIR/.git" ] || [ -f "$REPO_DIR/apps/cli/dist/index.js" ] || comma
                 rm -f /tmp/mirrorai_env_bak
             fi
 
-            echo -e "  ${GREEN}✓ Session + export data giữ nguyên${NC}"
+            echo -e "  ${GREEN}✓ Session + export data preserved${NC}"
             echo ""
             ;;
         3)

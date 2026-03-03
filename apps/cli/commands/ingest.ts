@@ -102,8 +102,8 @@ export const ingestCommand = new Command("ingest")
         if (!finalExportPath || !existsSync(finalExportPath)) {
           console.log("  No export file found.\n");
           console.log("  Option 1 (auto): mirrorai export");
-          console.log("    → Tự động tải chat history từ Telegram (cần API credentials)\n");
-          console.log("  Option 2 (manual): Export từ Telegram Desktop:");
+          console.log("    → Auto-download chat history from Telegram (requires API credentials)\n");
+          console.log("  Option 2 (manual): Export from Telegram Desktop:");
           console.log("    → Settings → Advanced → Export Telegram Data → JSON");
           console.log("    → mirrorai ingest --platform=telegram --file=<path>\n");
           continue;

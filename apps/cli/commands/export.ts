@@ -1,8 +1,8 @@
 /**
  * MirrorAI CLI — `mirrorai export`
- * Auto-export Telegram chat history. User chỉ cần số điện thoại + OTP lần đầu.
- * Lần sau tự động dùng session đã lưu — không cần đăng nhập lại.
- * 100% local — data không rời khỏi máy.
+ * Auto-export Telegram chat history. Only needs phone + OTP on first use.
+ * Auto-uses saved session afterwards — no re-login needed.
+ * 100% local — data never leaves your machine.
  */
 
 import { Command } from "commander";
@@ -50,12 +50,12 @@ function hasSession(): boolean {
 }
 
 export const exportCommand = new Command("export")
-  .description("Auto-export Telegram chat history (đăng nhập 1 lần, tự nhớ)")
-  .option("--phone <phone>", "Số điện thoại Telegram (+84...)")
+  .description("Auto-export Telegram chat history (login once, remembers you)")
+  .option("--phone <phone>", "Telegram phone number (+84...)")
   .option("--limit <number>", "Max messages per chat", "5000")
   .option("--filter <type>", "Chat filter: all | private | group", "all")
-  .option("--auto-ingest", "Tự động chạy ingest sau khi export")
-  .option("--logout", "Xóa session đăng nhập")
+  .option("--auto-ingest", "Auto-run ingest after export")
+  .option("--logout", "Clear login session")
   .action(async (options) => {
     console.log("\n╔════════════════════════════════════════╗");
     console.log("║  MirrorAI — Auto Export (100% Local)   ║");
@@ -66,9 +66,9 @@ export const exportCommand = new Command("export")
       if (hasSession()) {
         const { unlinkSync } = await import("node:fs");
         unlinkSync(SESSION_FILE);
-        console.log("  ✓ Đã xóa session. Lần sau sẽ đăng nhập lại.\n");
+        console.log("  ✓ Session cleared. Will need to re-login next time.\n");
       } else {
-        console.log("  Không có session nào.\n");
+        console.log("  No session found.\n");
       }
       return;
     }
@@ -84,26 +84,26 @@ export const exportCommand = new Command("export")
     const sessionExists = hasSession();
 
     if (sessionExists) {
-      console.log("  ✓ Đã đăng nhập trước đó — bỏ qua đăng nhập");
-      console.log(`  ℹ Dùng --logout để đăng nhập tài khoản khác\n`);
+      console.log("  ✓ Previously logged in — skipping login");
+      console.log(`  ℹ Use --logout to switch accounts\n`);
     } else {
-      // First time — need phone (KHÔNG lưu phone vào .env)
+      // First time — need phone (do NOT save phone to .env)
       if (!phone) {
-        console.log("  Lần đầu sử dụng — cần đăng nhập Telegram");
-        console.log("  (Chỉ cần 1 lần, sau đó tự nhớ)\n");
+        console.log("  First time use — Telegram login required");
+        console.log("  (Only needed once, remembered afterwards)\n");
         try {
           const inquirer = await import("inquirer");
           const answers = await inquirer.default.prompt([
             {
               type: "input",
               name: "phone",
-              message: "Số điện thoại Telegram (VD: +84901234567):",
-              validate: (v: string) => (v.startsWith("+") && v.length >= 10) || "Nhập đúng format: +84...",
+              message: "Telegram phone number (e.g. +84901234567):",
+              validate: (v: string) => (v.startsWith("+") && v.length >= 10) || "Invalid format. Use: +84...",
             },
           ]);
           phone = answers.phone;
         } catch {
-          console.error("  ✗ Chạy lại với: mirrorai export --phone +84901234567");
+          console.error("  ✗ Retry with: mirrorai export --phone +84901234567");
           process.exit(1);
         }
       }
@@ -117,7 +117,7 @@ export const exportCommand = new Command("export")
       try {
         execSync("pip3 install telethon", { stdio: "inherit" });
       } catch {
-        console.error("  ✗ Cài thất bại. Chạy: pip3 install telethon");
+        console.error("  ✗ Install failed. Run: pip3 install telethon");
         process.exit(1);
       }
     }
@@ -140,7 +140,7 @@ export const exportCommand = new Command("export")
     const cmd = cmdParts.join(" ");
 
     if (!sessionExists) {
-      console.log("  Mã OTP sẽ gửi qua app Telegram.\n");
+      console.log("  OTP code will be sent via Telegram app.\n");
     }
 
     try {
@@ -193,7 +193,7 @@ export const exportCommand = new Command("export")
         writeFileSync(envFile, envContent.trim() + "\n");
 
         if (options.autoIngest) {
-          console.log("\n  Tự động nạp dữ liệu...\n");
+          console.log("\n  Auto-ingesting data...\n");
           try {
             execSync(
               `node "${join(dirname(fileURLToPath(import.meta.url)), "..", "index.js")}" ingest --platform=telegram`,
@@ -203,12 +203,12 @@ export const exportCommand = new Command("export")
             console.error(`  ✗ Ingest failed: ${err.message}`);
           }
         } else {
-          console.log("\n  Tiếp theo chạy: mirrorai ingest\n");
+          console.log("\n  Next step: mirrorai ingest\n");
         }
       }
     } catch (err: any) {
-      console.error(`\n  ✗ Export thất bại: ${err.message}`);
-      console.error("  Thử lại: mirrorai export");
+      console.error(`\n  ✗ Export failed: ${err.message}`);
+      console.error("  Retry: mirrorai export");
       process.exit(1);
     }
   });
