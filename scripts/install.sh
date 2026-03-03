@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# MirrorAI — Smart Installer v4.0 for macOS
+# MirrorAI Installer for macOS
 # Usage: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuantaotis/MirrorAI/main/scripts/install.sh)"
 #
 # Features:
@@ -257,7 +257,7 @@ brew_install_safe() {
 clear 2>/dev/null || true
 echo ""
 echo -e "${BOLD}╔═══════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║   🪞 MirrorAI — Smart Installer v${VERSION}       ║${NC}"
+echo -e "${BOLD}║   🪞 MirrorAI                                ║${NC}"
 echo -e "${BOLD}║   ⚡ Fast install → background AI setup       ║${NC}"
 echo -e "${BOLD}╚═══════════════════════════════════════════════╝${NC}"
 echo ""
