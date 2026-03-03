@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# MirrorAI — Smart Installer v3.0 for macOS
+# MirrorAI — Smart Installer v4.0 for macOS
 # Usage: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tuantaotis/MirrorAI/main/scripts/install.sh)"
 #
 # Features:
+#   - Instant install (~3-5 min) — usable immediately in cloud mode
+#   - Background Phase 2: Ollama + models + ChromaDB auto-setup
+#   - Auto-switches to local mode when Phase 2 completes
 #   - Smart macOS version detection (Tier 1/2/3 compatibility)
-#   - Auto-select tools based on OS version + hardware
-#   - Error Recovery Engine: auto-diagnose + fix common issues
-#   - AI Fallback: suggest fixes for unknown errors
+#   - Error Recovery Engine + AI diagnosis
 #   - Progress bar + spinner with elapsed time
 #   - Zero user interaction required
 # ═══════════════════════════════════════════════════════════════════════════
@@ -16,27 +17,16 @@ set -uo pipefail
 # NOTE: no `set -e` — we handle errors manually via diagnose_and_fix()
 
 # ── Constants ─────────────────────────────────────────────────────────────
-VERSION="3.0.0"
+VERSION="4.0.0"
 MIRRORAI_HOME="$HOME/.mirrorai"
 REPO_DIR="$MIRRORAI_HOME/app"
 LOG="$MIRRORAI_HOME/install.log"
 REPO_URL="https://github.com/tuantaotis/MirrorAI.git"
 CHROMADB_PORT=8000
 OLLAMA_PORT=11434
-
-# ── Quick Mode Flag ─────────────────────────────────────────────────────
-QUICK_MODE=false
-for arg in "$@"; do
-    case "$arg" in
-        --quick) QUICK_MODE=true ;;
-    esac
-done
-
-if [ "$QUICK_MODE" = true ]; then
-    TOTAL_STEPS=8
-else
-    TOTAL_STEPS=12
-fi
+TOTAL_STEPS=8
+PHASE2_LOG="$MIRRORAI_HOME/logs/phase2.log"
+PHASE2_SCRIPT="$MIRRORAI_HOME/phase2-setup.sh"
 
 # ── Colors ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -117,7 +107,6 @@ diagnose_and_fix() {
     local exit_code="$2"
     local error_context="${3:-}"
 
-    # Get last 50 lines of log for analysis
     if [ -z "$error_context" ]; then
         error_context=$(tail -50 "$LOG" 2>/dev/null || echo "no log")
     fi
@@ -126,12 +115,11 @@ diagnose_and_fix() {
     log "${MAGENTA}🔍 Error Recovery Engine — analyzing failure...${NC}"
     echo "$error_context" >> "$LOG" 2>/dev/null || true
 
-    # Pattern matching on error
     case "$error_context" in
         *"does not run on macOS versions older"*)
             warn "DIAGNOSED: Tool incompatible with this macOS version"
             info "AUTO-FIX: Skipping to compatible fallback..."
-            return 0  # Signal caller to try fallback
+            return 0
             ;;
         *"postinstall"*"openssl"*|*"openssl@3"*"Error"*)
             warn "DIAGNOSED: openssl@3 postinstall failure"
@@ -188,7 +176,6 @@ diagnose_and_fix() {
             return 0
             ;;
         *)
-            # Unknown error → AI fallback
             warn "Unknown error — attempting AI diagnosis..."
             ai_diagnose "$step_name" "$error_context"
             return $?
@@ -201,21 +188,18 @@ ai_diagnose() {
     local step_name="$1"
     local error_text="$2"
 
-    # Check internet
     if ! curl -sf --max-time 3 https://google.com &>/dev/null; then
         err "No internet — cannot use AI diagnosis"
         err "Error context: $(echo "$error_text" | tail -5)"
         return 1
     fi
 
-    # Extract key error lines (last 10 meaningful lines)
     local key_lines
     key_lines=$(echo "$error_text" | grep -iE 'error|fail|fatal|cannot|unable|denied|not found' | tail -10)
     [ -z "$key_lines" ] && key_lines=$(echo "$error_text" | tail -10)
 
     info "Searching for solution online..."
 
-    # Use DuckDuckGo instant answer API (no API key needed)
     local search_query="macOS brew install error $(echo "$key_lines" | head -1 | tr -d '\n' | head -c 100)"
     local encoded_query
     encoded_query=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$search_query'))" 2>/dev/null || echo "")
@@ -231,7 +215,6 @@ ai_diagnose() {
         fi
     fi
 
-    # Always show the error for manual debugging
     echo ""
     echo -e "  ${DIM}─── Error details (last 5 lines) ───${NC}"
     echo "$key_lines" | tail -5 | while IFS= read -r line; do
@@ -255,7 +238,6 @@ brew_install_safe() {
             return 0
         fi
 
-        # Auto-diagnose and fix
         local log_tail
         log_tail=$(tail -30 "$LOG" 2>/dev/null || echo "")
         if diagnose_and_fix "brew install $pkg" "$?" "$log_tail"; then
@@ -276,10 +258,7 @@ clear 2>/dev/null || true
 echo ""
 echo -e "${BOLD}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║   🪞 MirrorAI — Smart Installer v${VERSION}       ║${NC}"
-echo -e "${BOLD}║   Auto-detect • Auto-fix • AI-assisted       ║${NC}"
-if [ "$QUICK_MODE" = true ]; then
-echo -e "${BOLD}║   ⚡ QUICK MODE — Phase 1 only (~3-5 min)    ║${NC}"
-fi
+echo -e "${BOLD}║   ⚡ Fast install → background AI setup       ║${NC}"
 echo -e "${BOLD}╚═══════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -301,140 +280,64 @@ OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "Unknown")
 CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo "0")
 OS_MAJOR=$(echo "$OS_VERSION" | cut -d'.' -f1)
 
-# Detect Apple Silicon
 IS_APPLE_SILICON=false
-if [ "$ARCH" = "arm64" ]; then
-    IS_APPLE_SILICON=true
-fi
+[ "$ARCH" = "arm64" ] && IS_APPLE_SILICON=true
 
-# ── macOS Compatibility Tier ──────────────────────────────────────────────
-# TIER 1 (macOS 14+): Full support — Docker Desktop, Ollama, brew bottles
-# TIER 2 (macOS 13):  Partial — Colima instead of Docker, Ollama ARM only, brew compile
-# TIER 3 (macOS 12):  Minimal — pip ChromaDB only, Ollama ARM only
-# UNSUPPORTED (<12):  Exit with clear message
-
-CAN_DOCKER=false         # Docker Desktop (latest)
-CAN_COLIMA=false         # Colima (lightweight Docker)
-CAN_OLLAMA=true          # Ollama local LLM
-BREW_HAS_BOTTLES=false   # Pre-compiled brew packages
-CHROMADB_MODE="pip"      # docker | pip
-USE_CLOUD_LLM=false      # Fallback to cloud API
+CAN_DOCKER=false
+CAN_COLIMA=false
+CAN_OLLAMA=true
+BREW_HAS_BOTTLES=false
+CHROMADB_MODE="pip"
+USE_CLOUD_LLM=false
 COMPAT_TIER=0
 
 if [ "$OS_MAJOR" -lt 12 ]; then
     echo ""
     err "macOS $OS_VERSION is not supported (minimum: macOS 12 Monterey)"
     err "Please upgrade macOS: System Settings → General → Software Update"
-    echo ""
-    info "Supported versions:"
-    info "  macOS 12 (Monterey)  — basic support"
-    info "  macOS 13 (Ventura)   — good support"
-    info "  macOS 14+ (Sonoma+)  — full support"
     exit 1
 elif [ "$OS_MAJOR" -ge 14 ]; then
-    COMPAT_TIER=1
-    CAN_DOCKER=true
-    CAN_COLIMA=true
-    BREW_HAS_BOTTLES=true
-    CHROMADB_MODE="docker"
+    COMPAT_TIER=1; CAN_DOCKER=true; CAN_COLIMA=true; BREW_HAS_BOTTLES=true; CHROMADB_MODE="docker"
 elif [ "$OS_MAJOR" -ge 13 ]; then
-    COMPAT_TIER=2
-    CAN_COLIMA=true
-    CAN_OLLAMA=true
-    CHROMADB_MODE="docker"
+    COMPAT_TIER=2; CAN_COLIMA=true; CAN_OLLAMA=true; CHROMADB_MODE="docker"
 else
-    # macOS 12
-    COMPAT_TIER=3
-    CAN_OLLAMA=true
-    CHROMADB_MODE="pip"
+    COMPAT_TIER=3; CAN_OLLAMA=true; CHROMADB_MODE="pip"
 fi
 
-# Auto-select model based on RAM (only if Ollama is available)
-# ┌──────────┬──────────────────┬──────────┬───────────┐
-# │ RAM      │ Model            │ Download │ RAM Usage │
-# ├──────────┼──────────────────┼──────────┼───────────┤
-# │ 64GB+    │ qwen2.5:32b      │ ~20GB    │ ~22GB     │
-# │ 48GB     │ qwen2.5:14b      │ ~9GB     │ ~10GB     │
-# │ 24-32GB  │ qwen2.5:7b       │ ~4.7GB   │ ~5.5GB    │
-# │ 16GB     │ qwen2.5:3b       │ ~2GB     │ ~2.5GB    │
-# │ 8-12GB   │ qwen2.5:1.5b     │ ~1GB     │ ~1.5GB    │
-# │ ≤4GB     │ qwen2.5:0.5b     │ ~400MB   │ ~600MB    │
-# └──────────┴──────────────────┴──────────┴───────────┘
+# Auto-select model based on RAM
 if [ "$CAN_OLLAMA" = true ]; then
     if [ "$RAM_GB" -ge 64 ]; then
-        SELECTED_MODEL="qwen2.5:32b"; MODEL_SIZE="~20GB"; QUALITY="Best — near cloud-quality"
+        SELECTED_MODEL="qwen2.5:32b"; MODEL_SIZE="~20GB"; QUALITY="Best"
     elif [ "$RAM_GB" -ge 48 ]; then
-        SELECTED_MODEL="qwen2.5:14b"; MODEL_SIZE="~9GB"; QUALITY="Great — recommended"
+        SELECTED_MODEL="qwen2.5:14b"; MODEL_SIZE="~9GB"; QUALITY="Great"
     elif [ "$RAM_GB" -ge 24 ]; then
-        SELECTED_MODEL="qwen2.5:7b"; MODEL_SIZE="~4.7GB"; QUALITY="Great — smooth"
+        SELECTED_MODEL="qwen2.5:7b"; MODEL_SIZE="~4.7GB"; QUALITY="Great"
     elif [ "$RAM_GB" -ge 16 ]; then
-        SELECTED_MODEL="qwen2.5:3b"; MODEL_SIZE="~2GB"; QUALITY="Good — casual chat"
+        SELECTED_MODEL="qwen2.5:3b"; MODEL_SIZE="~2GB"; QUALITY="Good"
     elif [ "$RAM_GB" -ge 8 ]; then
-        SELECTED_MODEL="qwen2.5:1.5b"; MODEL_SIZE="~1GB"; QUALITY="Good — lightweight, Vietnamese OK"
+        SELECTED_MODEL="qwen2.5:1.5b"; MODEL_SIZE="~1GB"; QUALITY="Good"
     else
-        SELECTED_MODEL="qwen2.5:0.5b"; MODEL_SIZE="~400MB"; QUALITY="Basic — ultra-light"
+        SELECTED_MODEL="qwen2.5:0.5b"; MODEL_SIZE="~400MB"; QUALITY="Basic"
     fi
 else
-    SELECTED_MODEL="gemini/gemini-2.5-flash"
-    MODEL_SIZE="cloud"
-    QUALITY="Cloud API — free tier (250 req/day)"
+    SELECTED_MODEL="gemini/gemini-2.5-flash"; MODEL_SIZE="cloud"; QUALITY="Cloud API"
 fi
 
 ok "macOS $OS_VERSION | $ARCH | ${RAM_GB}GB RAM | ${CORES} cores"
 ok "CPU: $CPU_BRAND"
 
-# ── Compatibility Report ─────────────────────────────────────────────────
 TIER_NAMES=("" "FULL SUPPORT" "PARTIAL SUPPORT" "MINIMAL SUPPORT")
 TIER_COLORS=("" "$GREEN" "$YELLOW" "$RED")
 
 echo ""
 echo -e "  ${BOLD}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "  ${BOLD}║  macOS $OS_VERSION — TIER $COMPAT_TIER: ${TIER_COLORS[$COMPAT_TIER]}${TIER_NAMES[$COMPAT_TIER]}${NC}${BOLD}$(printf '%*s' $((16 - ${#TIER_NAMES[$COMPAT_TIER]})) '')║${NC}"
-echo -e "  ${BOLD}╠══════════════════════════════════════════════════╣${NC}"
-
-# Docker line
-if [ "$CAN_DOCKER" = true ]; then
-    echo -e "  ${BOLD}║${NC}  Docker Desktop    ${GREEN}✅ compatible${NC}                ${BOLD}║${NC}"
-elif [ "$CAN_COLIMA" = true ]; then
-    echo -e "  ${BOLD}║${NC}  Docker Desktop    ${RED}❌${NC} → ${GREEN}Colima (fallback)${NC}       ${BOLD}║${NC}"
-else
-    echo -e "  ${BOLD}║${NC}  Docker Desktop    ${RED}❌${NC} → ${YELLOW}not needed (pip mode)${NC}   ${BOLD}║${NC}"
-fi
-
-# Ollama line
-if [ "$CAN_OLLAMA" = true ]; then
-    echo -e "  ${BOLD}║${NC}  Ollama (local AI) ${GREEN}✅ compatible${NC}                ${BOLD}║${NC}"
-else
-    echo -e "  ${BOLD}║${NC}  Ollama (local AI) ${RED}❌${NC} → ${GREEN}Cloud API (free)${NC}        ${BOLD}║${NC}"
-fi
-
-# ChromaDB line
-if [ "$CHROMADB_MODE" = "docker" ]; then
-    echo -e "  ${BOLD}║${NC}  ChromaDB          ${GREEN}✅ via container${NC}             ${BOLD}║${NC}"
-else
-    echo -e "  ${BOLD}║${NC}  ChromaDB          ${GREEN}✅ via pip (no Docker)${NC}        ${BOLD}║${NC}"
-fi
-
-# Brew line
-if [ "$BREW_HAS_BOTTLES" = true ]; then
-    echo -e "  ${BOLD}║${NC}  Homebrew          ${GREEN}✅ pre-built bottles${NC}          ${BOLD}║${NC}"
-else
-    echo -e "  ${BOLD}║${NC}  Homebrew          ${YELLOW}⚠  compile from source (~20m)${NC} ${BOLD}║${NC}"
-fi
-
-# Model line
-if [ "$USE_CLOUD_LLM" = true ]; then
-    echo -e "  ${BOLD}║${NC}  AI Model          ${CYAN}☁  Gemini Flash (free)${NC}        ${BOLD}║${NC}"
-else
-    echo -e "  ${BOLD}║${NC}  AI Model          ${GREEN}✅ $SELECTED_MODEL ($MODEL_SIZE)${NC}$(printf '%*s' $((11 - ${#SELECTED_MODEL} - ${#MODEL_SIZE})) '')${BOLD}║${NC}"
-fi
-
+echo -e "  ${BOLD}║  AI Model: $SELECTED_MODEL ($MODEL_SIZE)$(printf '%*s' $((27 - ${#SELECTED_MODEL} - ${#MODEL_SIZE})) '')║${NC}"
 echo -e "  ${BOLD}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
 echo "Hardware: macOS $OS_VERSION, $ARCH, ${RAM_GB}GB RAM, $CORES cores, Tier $COMPAT_TIER" >> "$LOG"
-echo "Flags: CAN_DOCKER=$CAN_DOCKER CAN_COLIMA=$CAN_COLIMA CAN_OLLAMA=$CAN_OLLAMA CHROMADB_MODE=$CHROMADB_MODE USE_CLOUD_LLM=$USE_CLOUD_LLM" >> "$LOG"
-echo "Selected model: $SELECTED_MODEL" >> "$LOG"
+echo "Selected model: $SELECTED_MODEL ($MODEL_SIZE)" >> "$LOG"
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  STEP 2: Homebrew
@@ -449,14 +352,12 @@ else
         ok "Homebrew installed"
     else
         diagnose_and_fix "Homebrew install" "$?" ""
-        # Retry once
         run_with_status "Retrying Homebrew install..." env NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
             err "Homebrew installation failed — cannot continue"
             exit 1
         }
     fi
 
-    # Add brew to PATH for Apple Silicon
     if [ "$IS_APPLE_SILICON" = true ] && [ -f /opt/homebrew/bin/brew ]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
         SHELL_PROFILE="$HOME/.zprofile"
@@ -466,7 +367,6 @@ else
     fi
 fi
 
-# Pre-update brew on older macOS (avoids shallow clone issues)
 if [ "$BREW_HAS_BOTTLES" = false ]; then
     warn "macOS $OS_VERSION: Homebrew may compile packages from source (~20-30 min)"
     run_with_status "Updating Homebrew formulae..." brew update || true
@@ -490,24 +390,18 @@ fi
 
 command -v git &>/dev/null || NEED_GIT=true
 
-# Pre-fix openssl@3 for older macOS
 if [ "$NEED_PYTHON" = true ] && [ "$BREW_HAS_BOTTLES" = false ]; then
     if brew list openssl@3 &>/dev/null 2>&1; then
-        log "Pre-fixing openssl@3 postinstall for macOS $OS_VERSION..."
         run_with_status "Running brew postinstall openssl@3..." brew postinstall openssl@3 || true
     fi
 fi
 
-# Install missing deps one by one
 [ "$NEED_GIT" = true ] && { brew_install_safe git || exit 1; }
 
 if [ "$NEED_NODE" = true ]; then
     brew_install_safe node@20 || {
-        # Fallback: try node@18
         warn "node@20 failed, trying node@18..."
-        brew_install_safe node@18 || {
-            err "Cannot install Node.js"; exit 1
-        }
+        brew_install_safe node@18 || { err "Cannot install Node.js"; exit 1; }
     }
     brew link node@20 --force >> "$LOG" 2>&1 || brew link node@18 --force >> "$LOG" 2>&1 || true
 fi
@@ -516,7 +410,6 @@ if [ "$NEED_PYTHON" = true ]; then
     brew_install_safe python@3.12 || {
         warn "python@3.12 failed, trying python@3.11..."
         brew_install_safe python@3.11 || {
-            # Check system python
             if python3 --version 2>/dev/null | grep -qE "3\.[89]|3\.1[0-9]"; then
                 ok "Using system Python: $(python3 --version 2>/dev/null)"
             else
@@ -531,208 +424,7 @@ ok "Python $(python3 --version 2>/dev/null | awk '{print $2}' || echo '—')"
 ok "Git $(git --version 2>/dev/null | awk '{print $3}' || echo '—')"
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  STEP 4: Container Runtime (tier-based)
-# ═══════════════════════════════════════════════════════════════════════════
-step "Setting up container runtime..."
-
-DOCKER_AVAILABLE=false
-
-if [ "$QUICK_MODE" = true ]; then
-    info "Quick mode: skipping container runtime (run 'mirrorai setup full' later)"
-    ok "Container runtime deferred"
-    # Jump to Step 7 equivalent
-fi
-
-if [ "$QUICK_MODE" = false ]; then
-# ── BEGIN FULL MODE: Container Runtime ──
-
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    ok "Docker already running ($(docker --version | awk '{print $3}' | tr -d ','))"
-    DOCKER_AVAILABLE=true
-    CHROMADB_MODE="docker"
-else
-    # ── TIER 1: Try Docker Desktop ────────────────────────────────────────
-    if [ "$CAN_DOCKER" = true ]; then
-        log "TIER 1: Installing Docker Desktop..."
-        if ! command -v docker &>/dev/null; then
-            if run_with_status "Installing Docker Desktop..." brew install --cask docker; then
-                ok "Docker Desktop installed"
-            else
-                warn "Docker Desktop install failed — trying Colima..."
-                CAN_DOCKER=false
-            fi
-        fi
-
-        if [ "$CAN_DOCKER" = true ] && command -v docker &>/dev/null; then
-            open -a Docker 2>/dev/null || open /Applications/Docker.app 2>/dev/null || true
-            DOCKER_WAIT=0
-            while ! docker info &>/dev/null 2>&1; do
-                [ $DOCKER_WAIT -ge 45 ] && break
-                printf "\r  ${CYAN}⏳${NC} Waiting for Docker Desktop... ${DIM}(%ds/45s)${NC}\033[K" "$DOCKER_WAIT"
-                sleep 2
-                DOCKER_WAIT=$((DOCKER_WAIT + 2))
-            done
-            printf "\r\033[K"
-
-            if docker info &>/dev/null 2>&1; then
-                ok "Docker Desktop running"
-                DOCKER_AVAILABLE=true
-                CHROMADB_MODE="docker"
-            fi
-        fi
-    fi
-
-    # ── TIER 1+2: Try Colima ──────────────────────────────────────────────
-    if [ "$DOCKER_AVAILABLE" = false ] && [ "$CAN_COLIMA" = true ]; then
-        log "Trying Colima (lightweight Docker runtime)..."
-
-        if ! command -v colima &>/dev/null; then
-            run_with_status "Installing Colima + Docker CLI..." brew install colima docker || true
-        fi
-
-        if command -v colima &>/dev/null; then
-            # Allocate minimal resources
-            COLIMA_MEM=2
-            [ "$RAM_GB" -ge 16 ] && COLIMA_MEM=4
-
-            if run_with_status "Starting Colima VM (${COLIMA_MEM}GB RAM)..." colima start --cpu 2 --memory "$COLIMA_MEM" --arch "$ARCH" 2>/dev/null; then
-                ok "Colima running (lightweight Docker runtime)"
-                DOCKER_AVAILABLE=true
-                CHROMADB_MODE="docker"
-            else
-                warn "Colima failed to start"
-                diagnose_and_fix "Colima start" "$?" "" || true
-            fi
-        fi
-    fi
-
-    # ── TIER 3: pip mode (no container) ───────────────────────────────────
-    if [ "$DOCKER_AVAILABLE" = false ]; then
-        CHROMADB_MODE="pip"
-        ok "No container runtime needed — ChromaDB will run via pip"
-        info "This is normal for macOS $OS_VERSION (Tier $COMPAT_TIER)"
-    fi
-fi
-
-fi # ── END FULL MODE: Container Runtime ──
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  STEP 5: Ollama (or Cloud LLM fallback)
-# ═══════════════════════════════════════════════════════════════════════════
-if [ "$QUICK_MODE" = false ]; then
-step "Setting up AI model provider..."
-
-OLLAMA_AVAILABLE=false
-
-if [ "$CAN_OLLAMA" = true ]; then
-    if command -v ollama &>/dev/null; then
-        ok "Ollama already installed"
-        OLLAMA_AVAILABLE=true
-    else
-        if run_with_status "Installing Ollama..." brew install ollama; then
-            ok "Ollama installed"
-            OLLAMA_AVAILABLE=true
-        else
-            warn "Ollama install failed"
-            diagnose_and_fix "Ollama install" "$?" "" || true
-        fi
-    fi
-
-    # Start Ollama
-    if [ "$OLLAMA_AVAILABLE" = true ]; then
-        if ! curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
-            log "Starting Ollama service..."
-            brew services start ollama >> "$LOG" 2>&1 || true
-
-            OLLAMA_WAIT=0
-            while ! curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; do
-                if [ $OLLAMA_WAIT -ge 15 ]; then
-                    # Try direct start
-                    ollama serve >> "$LOG" 2>&1 &
-                    sleep 3
-                    break
-                fi
-                sleep 1
-                OLLAMA_WAIT=$((OLLAMA_WAIT + 1))
-            done
-        fi
-
-        if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
-            ok "Ollama running on :$OLLAMA_PORT"
-        else
-            warn "Ollama not responding — will retry model pull later"
-        fi
-    fi
-else
-    # Cloud LLM mode
-    USE_CLOUD_LLM=true
-    SELECTED_MODEL="gemini/gemini-2.5-flash"
-    MODEL_SIZE="cloud"
-    QUALITY="Cloud API — free tier"
-
-    warn "Ollama not compatible with macOS $OS_VERSION ($ARCH)"
-    ok "Using cloud AI: Gemini 2.5 Flash (free tier: 250 req/day)"
-    info "To use local AI, upgrade to macOS 14+ (Sonoma)"
-    info "Set GEMINI_API_KEY in ~/.mirrorai/.env for cloud mode"
-fi
-fi # ── END FULL MODE: Ollama ──
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  STEP 6: Pull AI Models (or configure cloud)
-# ═══════════════════════════════════════════════════════════════════════════
-if [ "$QUICK_MODE" = false ]; then
-step "Setting up AI models..."
-
-if [ "$USE_CLOUD_LLM" = true ]; then
-    ok "Cloud mode: no model download needed"
-    info "Primary: Gemini 2.5 Flash (free) | Fallback: DeepSeek V3 (\$0.14/1M)"
-else
-    # Pull embedding + chat model in parallel
-    NEED_EMBED=false
-    NEED_CHAT=false
-    ollama list 2>/dev/null | grep -q "nomic-embed-text" || NEED_EMBED=true
-    ollama list 2>/dev/null | grep -q "$SELECTED_MODEL" || NEED_CHAT=true
-
-    if [ "$NEED_EMBED" = true ] && [ "$NEED_CHAT" = true ]; then
-        log "Pulling embedding + chat model in parallel..."
-        ollama pull nomic-embed-text >> "$LOG" 2>&1 &
-        EMBED_PID=$!
-        ollama pull "$SELECTED_MODEL" >> "$LOG" 2>&1 &
-        CHAT_PID=$!
-
-        # Spinner while waiting
-        pull_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-        pull_i=0
-        pull_start=$SECONDS
-        while kill -0 "$EMBED_PID" 2>/dev/null || kill -0 "$CHAT_PID" 2>/dev/null; do
-            pull_elapsed=$((SECONDS - pull_start))
-            pull_mins=$((pull_elapsed / 60))
-            pull_secs=$((pull_elapsed % 60))
-            printf "\r  ${CYAN}${pull_frames[$pull_i]}${NC} Pulling models in parallel... ${DIM}(%dm%02ds)${NC}\033[K" "$pull_mins" "$pull_secs"
-            pull_i=$(( (pull_i + 1) % ${#pull_frames[@]} ))
-            sleep 0.2
-        done
-        printf "\r\033[K"
-
-        wait "$EMBED_PID" && ok "nomic-embed-text (embedding)" || warn "Pull failed — retry: ollama pull nomic-embed-text"
-        wait "$CHAT_PID" && ok "$SELECTED_MODEL (chat)" || warn "Pull failed — retry: ollama pull $SELECTED_MODEL"
-    elif [ "$NEED_EMBED" = true ]; then
-        run_with_status "Pulling nomic-embed-text (~270MB)..." ollama pull nomic-embed-text && \
-            ok "nomic-embed-text (embedding)" || warn "Pull failed — retry: ollama pull nomic-embed-text"
-    elif [ "$NEED_CHAT" = true ]; then
-        run_with_status "Pulling $SELECTED_MODEL ($MODEL_SIZE)..." ollama pull "$SELECTED_MODEL" && \
-            ok "$SELECTED_MODEL (chat)" || warn "Pull failed — retry: ollama pull $SELECTED_MODEL"
-    else
-        ok "nomic-embed-text already downloaded"
-        ok "$SELECTED_MODEL already downloaded"
-    fi
-fi
-else
-    info "Quick mode: skipping AI model setup (run 'mirrorai setup models' later)"
-fi # ── END FULL MODE: Model Pull ──
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  STEP 7: Clone Repository
+#  STEP 4: Clone Repository
 # ═══════════════════════════════════════════════════════════════════════════
 step "Setting up MirrorAI repository..."
 
@@ -749,7 +441,6 @@ else
         ok "Repository cloned"
     else
         diagnose_and_fix "git clone" "$?" ""
-        # Retry once
         run_with_status "Retrying clone..." git clone "$REPO_URL" "$REPO_DIR" || {
             err "Cannot clone repository"; exit 1
         }
@@ -758,215 +449,56 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  STEP 8: Node.js Dependencies
+#  STEP 5: npm + pip install (PARALLEL)
 # ═══════════════════════════════════════════════════════════════════════════
-step "Installing Node.js dependencies..."
+step "Installing dependencies (npm + pip in parallel)..."
 
 cd "$REPO_DIR"
 
-if [ "$QUICK_MODE" = true ]; then
-    # ── PARALLEL: npm ci + pip install simultaneously ──
-    log "Quick mode: running npm ci + pip install in parallel..."
-
-    # Prepare Python venv first (fast, needed before pip)
-    if [ ! -d ".venv" ]; then
-        python3 -m venv .venv >> "$LOG" 2>&1
-    fi
-    source .venv/bin/activate
-    pip install --upgrade pip >> "$LOG" 2>&1
-
-    # Launch both in parallel
-    (npm ci --workspaces >> "$LOG" 2>&1 || npm install --workspaces >> "$LOG" 2>&1 || npm install >> "$LOG" 2>&1) &
-    NPM_PID=$!
-    (pip install -e ".[dev]" >> "$LOG" 2>&1 || pip install -e . >> "$LOG" 2>&1 || pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich >> "$LOG" 2>&1) &
-    PIP_PID=$!
-
-    # Wait with spinner
-    local_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local_i=0
-    local_start=$SECONDS
-    while kill -0 "$NPM_PID" 2>/dev/null || kill -0 "$PIP_PID" 2>/dev/null; do
-        local_elapsed=$((SECONDS - local_start))
-        local_mins=$((local_elapsed / 60))
-        local_secs=$((local_elapsed % 60))
-        printf "\r  ${CYAN}${local_frames[$local_i]}${NC} npm + pip installing in parallel... ${DIM}(%dm%02ds)${NC}\033[K" "$local_mins" "$local_secs"
-        local_i=$(( (local_i + 1) % ${#local_frames[@]} ))
-        sleep 0.1
-    done
-    printf "\r\033[K"
-
-    wait "$NPM_PID" && ok "npm packages installed" || warn "npm install had issues — check log"
-    wait "$PIP_PID" && ok "Python packages installed" || warn "pip install had issues — check log"
-
-    # Build
-    run_with_status "npm build (workspaces)..." npm run build --workspaces 2>/dev/null || true
-
-    # Skip Step 9 marker (already done above)
-    step "Python dependencies (done in parallel)"
-    ok "Python packages installed in parallel with npm"
-else
-    # ── SEQUENTIAL: original flow ──
-    if run_with_status "npm install (workspaces)..." npm install --workspaces; then
-        ok "npm packages installed"
-    else
-        warn "npm install failed — trying without workspaces..."
-        run_with_status "npm install (flat)..." npm install || {
-            diagnose_and_fix "npm install" "$?" ""
-            err "npm install failed"
-        }
-    fi
-    run_with_status "npm build (workspaces)..." npm run build --workspaces 2>/dev/null || true
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  STEP 9: Python Dependencies
-# ═══════════════════════════════════════════════════════════════════════════
-    step "Installing Python dependencies..."
-
-    cd "$REPO_DIR"
-
-    if [ ! -d ".venv" ]; then
-        python3 -m venv .venv >> "$LOG" 2>&1
-    fi
-
-    source .venv/bin/activate
-
-    run_with_status "Upgrading pip..." pip install --upgrade pip
-    if run_with_status "Installing Python packages..." pip install -e ".[dev]"; then
-        ok "Python packages installed"
-    elif run_with_status "Installing Python packages (no dev)..." pip install -e .; then
-        ok "Python packages installed (without dev deps)"
-    else
-        warn "pip install -e failed — installing core deps manually..."
-        run_with_status "Installing core deps..." pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich || {
-            diagnose_and_fix "pip install" "$?" ""
-            err "Python package installation failed"
-        }
-        ok "Core Python packages installed"
-    fi
+# Prepare Python venv
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv >> "$LOG" 2>&1
 fi
+source .venv/bin/activate
+pip install --upgrade pip >> "$LOG" 2>&1
+
+# Launch both in parallel
+(npm ci --workspaces >> "$LOG" 2>&1 || npm install --workspaces >> "$LOG" 2>&1 || npm install >> "$LOG" 2>&1) &
+NPM_PID=$!
+(pip install -e ".[dev]" >> "$LOG" 2>&1 || pip install -e . >> "$LOG" 2>&1 || pip install chromadb langchain langchain-community underthesea scikit-learn pydantic httpx pyyaml rich >> "$LOG" 2>&1) &
+PIP_PID=$!
+
+# Wait with spinner
+sp_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+sp_i=0
+sp_start=$SECONDS
+while kill -0 "$NPM_PID" 2>/dev/null || kill -0 "$PIP_PID" 2>/dev/null; do
+    sp_elapsed=$((SECONDS - sp_start))
+    sp_mins=$((sp_elapsed / 60))
+    sp_secs=$((sp_elapsed % 60))
+    printf "\r  ${CYAN}${sp_frames[$sp_i]}${NC} npm + pip installing in parallel... ${DIM}(%dm%02ds)${NC}\033[K" "$sp_mins" "$sp_secs"
+    sp_i=$(( (sp_i + 1) % ${#sp_frames[@]} ))
+    sleep 0.1
+done
+printf "\r\033[K"
+
+wait "$NPM_PID" && ok "npm packages installed" || warn "npm install had issues — check $LOG"
+wait "$PIP_PID" && ok "Python packages installed" || warn "pip install had issues — check $LOG"
+
+run_with_status "Building workspaces..." npm run build --workspaces 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  STEP 10: ChromaDB
-# ═══════════════════════════════════════════════════════════════════════════
-if [ "$QUICK_MODE" = true ]; then
-    step "ChromaDB (deferred)"
-    info "Quick mode: skipping ChromaDB (run 'mirrorai setup vectordb' later)"
-else
-step "Starting ChromaDB..."
-
-if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-    ok "ChromaDB already running on :$CHROMADB_PORT"
-elif [ "$CHROMADB_MODE" = "docker" ] && docker info &>/dev/null 2>&1; then
-    # Docker/Colima mode
-    docker rm -f chromadb >> "$LOG" 2>&1 || true
-
-    log "Starting ChromaDB container..."
-    docker run -d \
-        --name chromadb \
-        --restart unless-stopped \
-        -p $CHROMADB_PORT:8000 \
-        -v "$MIRRORAI_HOME/data/chromadb:/chroma/chroma" \
-        chromadb/chroma:latest >> "$LOG" 2>&1
-
-    CHROMA_WAIT=0
-    while ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; do
-        [ $CHROMA_WAIT -ge 30 ] && break
-        sleep 1
-        CHROMA_WAIT=$((CHROMA_WAIT + 1))
-    done
-
-    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-        ok "ChromaDB running on :$CHROMADB_PORT (Docker)"
-    else
-        warn "ChromaDB container not ready — falling back to pip mode..."
-        CHROMADB_MODE="pip"
-    fi
-fi
-
-# Pip mode (primary for Tier 3, fallback for others)
-if [ "$CHROMADB_MODE" = "pip" ] && ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-    log "Starting ChromaDB via pip..."
-
-    source "$REPO_DIR/.venv/bin/activate" 2>/dev/null || true
-    pip install chromadb >> "$LOG" 2>&1 || true
-
-    mkdir -p "$MIRRORAI_HOME/data/chromadb"
-
-    CHROMA_LOG="$MIRRORAI_HOME/logs/chromadb.log"
-    nohup "$REPO_DIR/.venv/bin/chroma" run \
-        --path "$MIRRORAI_HOME/data/chromadb" \
-        --port $CHROMADB_PORT \
-        --host 0.0.0.0 \
-        > "$CHROMA_LOG" 2>&1 &
-    CHROMA_PID=$!
-    echo "$CHROMA_PID" > "$MIRRORAI_HOME/chromadb.pid"
-
-    CHROMA_WAIT=0
-    while ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; do
-        if [ $CHROMA_WAIT -ge 20 ]; then
-            warn "ChromaDB not ready — check: $CHROMA_LOG"
-            break
-        fi
-        sleep 1
-        CHROMA_WAIT=$((CHROMA_WAIT + 1))
-    done
-
-    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-        ok "ChromaDB running on :$CHROMADB_PORT (pip mode, PID: $CHROMA_PID)"
-
-        # Auto-start via launchd
-        PLIST_DIR="$HOME/Library/LaunchAgents"
-        PLIST_FILE="$PLIST_DIR/com.mirrorai.chromadb.plist"
-        mkdir -p "$PLIST_DIR"
-        cat > "$PLIST_FILE" << PLISTEOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.mirrorai.chromadb</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$REPO_DIR/.venv/bin/chroma</string>
-        <string>run</string>
-        <string>--path</string>
-        <string>$MIRRORAI_HOME/data/chromadb</string>
-        <string>--port</string>
-        <string>$CHROMADB_PORT</string>
-        <string>--host</string>
-        <string>0.0.0.0</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
-    <key>StandardErrorPath</key>
-    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
-</dict>
-</plist>
-PLISTEOF
-        launchctl load "$PLIST_FILE" 2>/dev/null || true
-        ok "ChromaDB auto-start configured (launchd)"
-    fi
-fi
-fi # ── END FULL/QUICK MODE: ChromaDB ──
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  STEP 11: Auto-Generate Config
+#  STEP 6: Auto-Generate Config
 # ═══════════════════════════════════════════════════════════════════════════
 step "Auto-generating configuration..."
 
-# Determine model config based on mode
+# Default to cloud mode initially (local mode enabled after Phase 2)
+MODEL_PRIMARY="gemini/gemini-2.5-flash"
+MODEL_FALLBACK="ollama/$SELECTED_MODEL"
+EMBEDDING_PROVIDER="ollama"
+
 if [ "$USE_CLOUD_LLM" = true ]; then
-    MODEL_PRIMARY="gemini/gemini-2.5-flash"
     MODEL_FALLBACK="deepseek/deepseek-chat"
-    EMBEDDING_PROVIDER="ollama"  # Still try ollama for embeddings if available
-else
-    MODEL_PRIMARY="ollama/$SELECTED_MODEL"
-    MODEL_FALLBACK="gemini/gemini-2.5-flash"
-    EMBEDDING_PROVIDER="ollama"
 fi
 
 # Generate .env
@@ -985,7 +517,7 @@ TELEGRAM_BOT_TOKEN=
 ZALO_BOT_TOKEN=
 
 # ── AI Providers ──────────────────────────────────────
-$([ "$USE_CLOUD_LLM" = true ] && echo "# REQUIRED for cloud mode:" || echo "# Optional — for cloud fallback:")
+# Cloud mode (active now — local mode auto-enables after Phase 2):
 GEMINI_API_KEY=
 # ANTHROPIC_API_KEY=sk-ant-...
 # DEEPSEEK_API_KEY=sk-...
@@ -1029,8 +561,9 @@ platforms:
 model:
   primary: "$MODEL_PRIMARY"
   fallback: "$MODEL_FALLBACK"
+  local_model: "ollama/$SELECTED_MODEL"
   temperature: 0.8
-  cloud_mode: $USE_CLOUD_LLM
+  cloud_mode: true
 
 embedding:
   provider: "$EMBEDDING_PROVIDER"
@@ -1061,13 +594,15 @@ openclaw:
   workspace: "$REPO_DIR/workspace"
   gateway_port: 18789
 YAMLEOF
-ok "mirrorai.config.yaml generated (model: $MODEL_PRIMARY)"
+ok "mirrorai.config.yaml generated"
 
 # State
+DOCKER_AVAILABLE=false
 cat > "$MIRRORAI_HOME/state.json" << STATEEOF
 {
-  "state": "$([ "$QUICK_MODE" = true ] && echo "QUICK_READY" || echo "READY")",
-  "install_mode": "$([ "$QUICK_MODE" = true ] && echo "quick" || echo "full")",
+  "state": "CLOUD_READY",
+  "install_mode": "phase1_complete",
+  "phase2_status": "pending",
   "installed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "version": "$VERSION",
   "compatibility_tier": $COMPAT_TIER,
@@ -1080,13 +615,14 @@ cat > "$MIRRORAI_HOME/state.json" << STATEEOF
   },
   "model": {
     "chat": "$SELECTED_MODEL",
+    "chat_size": "$MODEL_SIZE",
     "embedding": "nomic-embed-text",
-    "cloud_mode": $USE_CLOUD_LLM
+    "cloud_mode": true
   },
   "services": {
     "chromadb_mode": "$CHROMADB_MODE",
-    "docker_available": $DOCKER_AVAILABLE,
-    "ollama_available": ${OLLAMA_AVAILABLE:-false}
+    "docker_available": false,
+    "ollama_available": false
   },
   "platforms": {},
   "persona_built": false,
@@ -1096,11 +632,10 @@ STATEEOF
 ok "State initialized"
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  STEP 12: Install CLI + Health Check
+#  STEP 7: Install CLI
 # ═══════════════════════════════════════════════════════════════════════════
-step "Installing CLI & running health check..."
+step "Installing CLI..."
 
-# Link CLI
 cd "$REPO_DIR/apps/cli" 2>/dev/null && {
     npm link >> "$LOG" 2>&1 || {
         SHELL_PROFILE="$HOME/.zprofile"
@@ -1108,89 +643,330 @@ cd "$REPO_DIR/apps/cli" 2>/dev/null && {
             echo "export PATH=\"$REPO_DIR/apps/cli/node_modules/.bin:\$PATH\"" >> "$SHELL_PROFILE"
         fi
     }
-    ok "CLI installed"
+    ok "CLI installed (mirrorai command available)"
 } || warn "CLI directory not found — skipping"
 
-# ── Health Check (tier-aware) ─────────────────────────────────────────────
-echo ""
-log "${BOLD}Running health check...${NC}"
+# ═══════════════════════════════════════════════════════════════════════════
+#  STEP 8: Generate Phase 2 script + launch background setup
+# ═══════════════════════════════════════════════════════════════════════════
+step "Launching background AI setup (Phase 2)..."
 
-HC_PASS=0
-HC_TOTAL=0
+mkdir -p "$MIRRORAI_HOME/logs"
 
-if [ "$QUICK_MODE" = true ]; then
-    # Quick mode: only check what was installed
-    HC_TOTAL=2
-    HC_PASS=0
+# ── Generate Phase 2 background script ────────────────────────────────────
+cat > "$PHASE2_SCRIPT" << 'PHASE2EOF'
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# MirrorAI — Phase 2 Background Setup
+# Auto-generated by installer. Sets up Ollama + models + ChromaDB.
+# Runs in background — user notified on completion.
+# ═══════════════════════════════════════════════════════════════════════════
+set -uo pipefail
 
-    # Check Node.js
-    HC_TOTAL=$((HC_TOTAL))
-    if command -v node &>/dev/null; then
-        ok "Node.js       ✅ $(node -v 2>/dev/null)"; HC_PASS=$((HC_PASS + 1))
-    else
-        err "Node.js       ❌ not found"
+MIRRORAI_HOME="$HOME/.mirrorai"
+REPO_DIR="$MIRRORAI_HOME/app"
+LOG="$MIRRORAI_HOME/logs/phase2.log"
+STATE="$MIRRORAI_HOME/state.json"
+OLLAMA_PORT=11434
+CHROMADB_PORT=8000
+
+echo "=== Phase 2 Started: $(date) ===" > "$LOG"
+
+update_state() {
+    local key="$1" val="$2"
+    python3 -c "
+import json, sys
+with open('$STATE','r') as f: d=json.load(f)
+keys = '$key'.split('.')
+obj = d
+for k in keys[:-1]: obj = obj[k]
+try: obj[keys[-1]] = json.loads('$val')
+except: obj[keys[-1]] = '$val'
+with open('$STATE','w') as f: json.dump(d,f,indent=2)
+" 2>/dev/null || true
+}
+
+update_state "phase2_status" '"in_progress"'
+
+# ── 1. Container Runtime ──────────────────────────────────────────────────
+echo "[$(date +%H:%M:%S)] Setting up container runtime..." >> "$LOG"
+
+DOCKER_AVAILABLE=false
+CHROMADB_MODE="pip"
+
+PHASE2EOF
+
+# Inject tier-specific container logic
+if [ "$CAN_DOCKER" = true ]; then
+    cat >> "$PHASE2_SCRIPT" << 'PHASE2EOF'
+# TIER 1: Docker Desktop
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true; CHROMADB_MODE="docker"
+    echo "  ✓ Docker already running" >> "$LOG"
+elif ! command -v docker &>/dev/null; then
+    brew install --cask docker >> "$LOG" 2>&1 || true
+    open -a Docker 2>/dev/null || true
+    for i in $(seq 1 30); do
+        docker info &>/dev/null 2>&1 && break
+        sleep 2
+    done
+    if docker info &>/dev/null 2>&1; then
+        DOCKER_AVAILABLE=true; CHROMADB_MODE="docker"
+        echo "  ✓ Docker Desktop installed + running" >> "$LOG"
     fi
+fi
+PHASE2EOF
+fi
 
-    # Check Python
-    if command -v python3 &>/dev/null; then
-        ok "Python        ✅ $(python3 --version 2>/dev/null | awk '{print $2}')"; HC_PASS=$((HC_PASS + 1))
-    else
-        err "Python        ❌ not found"
+if [ "$CAN_COLIMA" = true ]; then
+    cat >> "$PHASE2_SCRIPT" << PHASE2EOF
+# TIER 1+2: Colima fallback
+if [ "\$DOCKER_AVAILABLE" = false ]; then
+    command -v colima &>/dev/null || brew install colima docker >> "\$LOG" 2>&1 || true
+    if command -v colima &>/dev/null; then
+        COLIMA_MEM=$( [ "$RAM_GB" -ge 16 ] && echo 4 || echo 2 )
+        colima start --cpu 2 --memory \$COLIMA_MEM --arch $ARCH >> "\$LOG" 2>&1 && {
+            DOCKER_AVAILABLE=true; CHROMADB_MODE="docker"
+            echo "  ✓ Colima running" >> "\$LOG"
+        } || echo "  ⚠ Colima failed" >> "\$LOG"
     fi
+fi
+PHASE2EOF
+fi
 
-    info "Ollama        ⏭  deferred (run 'mirrorai setup models')"
-    info "ChromaDB      ⏭  deferred (run 'mirrorai setup vectordb')"
+cat >> "$PHASE2_SCRIPT" << 'PHASE2EOF'
+
+update_state "services.docker_available" "$DOCKER_AVAILABLE"
+
+# ── 2. Ollama ─────────────────────────────────────────────────────────────
+echo "[$(date +%H:%M:%S)] Setting up Ollama..." >> "$LOG"
+
+OLLAMA_AVAILABLE=false
+
+if command -v ollama &>/dev/null; then
+    OLLAMA_AVAILABLE=true
+    echo "  ✓ Ollama already installed" >> "$LOG"
 else
-    # Full mode: check everything
-    # Check Ollama (only if expected)
-    if [ "$CAN_OLLAMA" = true ]; then
-        HC_TOTAL=$((HC_TOTAL + 1))
-        if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
-            ok "Ollama        ✅ running"; HC_PASS=$((HC_PASS + 1))
-        else
-            err "Ollama        ❌ not running — run: brew services start ollama"
-        fi
-    else
-        info "Ollama        ⏭  skipped (cloud mode)"
-    fi
+    brew install ollama >> "$LOG" 2>&1 && {
+        OLLAMA_AVAILABLE=true
+        echo "  ✓ Ollama installed" >> "$LOG"
+    } || echo "  ✗ Ollama install failed" >> "$LOG"
+fi
 
-    # Check ChromaDB
-    HC_TOTAL=$((HC_TOTAL + 1))
-    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-        ok "ChromaDB      ✅ running ($CHROMADB_MODE mode)"; HC_PASS=$((HC_PASS + 1))
-    else
-        err "ChromaDB      ❌ not running"
-        if [ "$CHROMADB_MODE" = "pip" ]; then
-            info "Start manually: ~/.mirrorai/app/.venv/bin/chroma run --path ~/.mirrorai/data/chromadb --port 8000"
+if [ "$OLLAMA_AVAILABLE" = true ]; then
+    if ! curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+        brew services start ollama >> "$LOG" 2>&1 || true
+        for i in $(seq 1 20); do
+            curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null && break
+            sleep 1
+        done
+        if ! curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+            ollama serve >> "$LOG" 2>&1 &
+            sleep 3
         fi
     fi
 
-    # Check models
-    if [ "$USE_CLOUD_LLM" = true ]; then
-        HC_TOTAL=$((HC_TOTAL + 1))
-        info "AI Model      ☁  Cloud mode (Gemini Flash)"; HC_PASS=$((HC_PASS + 1))
-        info "              Set GEMINI_API_KEY in ~/.mirrorai/.env"
+    if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+        echo "  ✓ Ollama running on :$OLLAMA_PORT" >> "$LOG"
     else
-        # Check chat model
-        HC_TOTAL=$((HC_TOTAL + 1))
-        if ollama list 2>/dev/null | grep -q "$SELECTED_MODEL"; then
-            ok "Chat model    ✅ $SELECTED_MODEL"; HC_PASS=$((HC_PASS + 1))
-        else
-            err "Chat model    ❌ run: ollama pull $SELECTED_MODEL"
-        fi
-
-        # Check embedding
-        HC_TOTAL=$((HC_TOTAL + 1))
-        if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-            ok "Embedding     ✅ nomic-embed-text"; HC_PASS=$((HC_PASS + 1))
-        else
-            err "Embedding     ❌ run: ollama pull nomic-embed-text"
-        fi
+        echo "  ⚠ Ollama not responding" >> "$LOG"
     fi
 fi
 
+update_state "services.ollama_available" "$OLLAMA_AVAILABLE"
+
+# ── 3. Pull Models (parallel) ────────────────────────────────────────────
+PHASE2EOF
+
+# Inject selected model
+cat >> "$PHASE2_SCRIPT" << PHASE2EOF
+SELECTED_MODEL="$SELECTED_MODEL"
+MODEL_SIZE="$MODEL_SIZE"
+PHASE2EOF
+
+cat >> "$PHASE2_SCRIPT" << 'PHASE2EOF'
+echo "[$(date +%H:%M:%S)] Pulling AI models..." >> "$LOG"
+
+if [ "$OLLAMA_AVAILABLE" = true ] && curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+    EXISTING=$(ollama list 2>/dev/null || echo "")
+
+    PIDS=()
+
+    if ! echo "$EXISTING" | grep -q "nomic-embed-text"; then
+        echo "  → Pulling nomic-embed-text (~270MB)..." >> "$LOG"
+        ollama pull nomic-embed-text >> "$LOG" 2>&1 &
+        PIDS+=($!)
+    else
+        echo "  ✓ nomic-embed-text already downloaded" >> "$LOG"
+    fi
+
+    if ! echo "$EXISTING" | grep -q "$SELECTED_MODEL"; then
+        echo "  → Pulling $SELECTED_MODEL ($MODEL_SIZE)..." >> "$LOG"
+        ollama pull "$SELECTED_MODEL" >> "$LOG" 2>&1 &
+        PIDS+=($!)
+    else
+        echo "  ✓ $SELECTED_MODEL already downloaded" >> "$LOG"
+    fi
+
+    # Wait for all pulls
+    for pid in "${PIDS[@]}"; do
+        wait "$pid" || echo "  ⚠ A model pull failed (PID: $pid)" >> "$LOG"
+    done
+
+    echo "  ✓ Model pull complete" >> "$LOG"
+else
+    echo "  ⚠ Ollama not available — skipping model pull" >> "$LOG"
+fi
+
+# ── 4. ChromaDB ───────────────────────────────────────────────────────────
+echo "[$(date +%H:%M:%S)] Starting ChromaDB..." >> "$LOG"
+
+if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+    echo "  ✓ ChromaDB already running" >> "$LOG"
+elif [ "$CHROMADB_MODE" = "docker" ] && docker info &>/dev/null 2>&1; then
+    docker rm -f chromadb >> "$LOG" 2>&1 || true
+    docker run -d \
+        --name chromadb \
+        --restart unless-stopped \
+        -p $CHROMADB_PORT:8000 \
+        -v "$MIRRORAI_HOME/data/chromadb:/chroma/chroma" \
+        chromadb/chroma:latest >> "$LOG" 2>&1
+
+    for i in $(seq 1 30); do
+        curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null && break
+        sleep 1
+    done
+
+    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+        echo "  ✓ ChromaDB running (Docker)" >> "$LOG"
+    else
+        CHROMADB_MODE="pip"
+    fi
+fi
+
+if [ "$CHROMADB_MODE" = "pip" ] && ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+    source "$REPO_DIR/.venv/bin/activate" 2>/dev/null || true
+    pip install chromadb >> "$LOG" 2>&1 || true
+    mkdir -p "$MIRRORAI_HOME/data/chromadb"
+
+    nohup "$REPO_DIR/.venv/bin/chroma" run \
+        --path "$MIRRORAI_HOME/data/chromadb" \
+        --port $CHROMADB_PORT \
+        --host 0.0.0.0 \
+        >> "$MIRRORAI_HOME/logs/chromadb.log" 2>&1 &
+    CHROMA_PID=$!
+    echo "$CHROMA_PID" > "$MIRRORAI_HOME/chromadb.pid"
+
+    for i in $(seq 1 20); do
+        curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null && break
+        sleep 1
+    done
+
+    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+        echo "  ✓ ChromaDB running (pip, PID: $CHROMA_PID)" >> "$LOG"
+
+        # Auto-start via launchd
+        PLIST_DIR="$HOME/Library/LaunchAgents"
+        PLIST_FILE="$PLIST_DIR/com.mirrorai.chromadb.plist"
+        mkdir -p "$PLIST_DIR"
+        cat > "$PLIST_FILE" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mirrorai.chromadb</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$REPO_DIR/.venv/bin/chroma</string>
+        <string>run</string>
+        <string>--path</string>
+        <string>$MIRRORAI_HOME/data/chromadb</string>
+        <string>--port</string>
+        <string>$CHROMADB_PORT</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
+    <key>StandardErrorPath</key>
+    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
+</dict>
+</plist>
+PLISTEOF
+        launchctl load "$PLIST_FILE" 2>/dev/null || true
+    else
+        echo "  ⚠ ChromaDB failed to start" >> "$LOG"
+    fi
+fi
+
+update_state "services.chromadb_mode" "\"$CHROMADB_MODE\""
+
+# ── 5. Switch to local mode ───────────────────────────────────────────────
+echo "[$(date +%H:%M:%S)] Finalizing..." >> "$LOG"
+
+# Check if local AI is ready
+OLLAMA_OK=false
+MODELS_OK=false
+
+if curl -sf http://localhost:$OLLAMA_PORT/api/tags &>/dev/null; then
+    OLLAMA_OK=true
+    MODELS=$(ollama list 2>/dev/null || echo "")
+    if echo "$MODELS" | grep -q "$SELECTED_MODEL" && echo "$MODELS" | grep -q "nomic-embed-text"; then
+        MODELS_OK=true
+    fi
+fi
+
+if [ "$OLLAMA_OK" = true ] && [ "$MODELS_OK" = true ]; then
+    # Switch config to local mode
+    python3 -c "
+import yaml, sys
+config_path = '$MIRRORAI_HOME/mirrorai.config.yaml'
+with open(config_path, 'r') as f:
+    config = yaml.safe_load(f)
+config['model']['primary'] = 'ollama/$SELECTED_MODEL'
+config['model']['fallback'] = 'gemini/gemini-2.5-flash'
+config['model']['cloud_mode'] = False
+with open(config_path, 'w') as f:
+    yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+" 2>/dev/null || true
+
+    update_state "model.cloud_mode" "false"
+    update_state "state" '"READY"'
+    update_state "phase2_status" '"complete"'
+    echo "  ✓ Switched to LOCAL mode (ollama/$SELECTED_MODEL)" >> "$LOG"
+else
+    update_state "state" '"CLOUD_READY"'
+    update_state "phase2_status" '"partial"'
+    echo "  ⚠ Staying in CLOUD mode (some services not ready)" >> "$LOG"
+fi
+
+echo "=== Phase 2 Complete: $(date) ===" >> "$LOG"
+
+# ── macOS Notification ────────────────────────────────────────────────────
+if [ "$OLLAMA_OK" = true ] && [ "$MODELS_OK" = true ]; then
+    osascript -e 'display notification "AI models downloaded! Switched to local mode." with title "🪞 MirrorAI" subtitle "Phase 2 Complete ✅"' 2>/dev/null || true
+else
+    osascript -e 'display notification "Some services need attention. Run: mirrorai doctor" with title "🪞 MirrorAI" subtitle "Phase 2 Partial ⚠"' 2>/dev/null || true
+fi
+PHASE2EOF
+
+chmod +x "$PHASE2_SCRIPT"
+ok "Phase 2 script generated"
+
+# Launch Phase 2 in background
+nohup bash "$PHASE2_SCRIPT" > "$PHASE2_LOG" 2>&1 &
+PHASE2_PID=$!
+echo "$PHASE2_PID" > "$MIRRORAI_HOME/phase2.pid"
+ok "Phase 2 running in background (PID: $PHASE2_PID)"
+info "Progress: tail -f $PHASE2_LOG"
+
 # ═══════════════════════════════════════════════════════════════════════════
-#  DONE
+#  DONE — Phase 1 Complete
 # ═══════════════════════════════════════════════════════════════════════════
 ELAPSED=$SECONDS
 MINS=$((ELAPSED / 60))
@@ -1198,47 +974,30 @@ SECS=$((ELAPSED % 60))
 
 echo ""
 echo -e "${BOLD}══════════════════════════════════════════════════${NC}"
-if [ "$QUICK_MODE" = true ]; then
-    echo -e "  ${GREEN}${BOLD}⚡ Quick install complete! (${MINS}m ${SECS}s)${NC}"
-elif [ $HC_PASS -eq $HC_TOTAL ]; then
-    echo -e "  ${GREEN}${BOLD}✅ MirrorAI installed successfully!${NC}"
-else
-    echo -e "  ${YELLOW}${BOLD}⚠ MirrorAI installed with $((HC_TOTAL - HC_PASS)) warning(s)${NC}"
-fi
+echo -e "  ${GREEN}${BOLD}⚡ MirrorAI installed! (${MINS}m ${SECS}s)${NC}"
 echo -e "${BOLD}══════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${DIM}Hardware${NC}     $ARCH | ${RAM_GB}GB RAM | Apple Silicon: $IS_APPLE_SILICON"
 echo -e "  ${DIM}macOS${NC}        $OS_VERSION (Tier $COMPAT_TIER: ${TIER_NAMES[$COMPAT_TIER]})"
-echo -e "  ${DIM}Mode${NC}         $([ "$QUICK_MODE" = true ] && echo "Quick (Phase 1 only)" || echo "Full")"
-echo -e "  ${DIM}Model${NC}        $SELECTED_MODEL ($QUALITY)"
-echo -e "  ${DIM}ChromaDB${NC}     $([ "$QUICK_MODE" = true ] && echo "deferred" || echo "$CHROMADB_MODE mode")"
-echo -e "  ${DIM}Health${NC}       $HC_PASS/$HC_TOTAL checks OK"
+echo -e "  ${DIM}AI Model${NC}     $SELECTED_MODEL ($MODEL_SIZE) — ${YELLOW}downloading in background${NC}"
+echo -e "  ${DIM}Mode${NC}         ${GREEN}Cloud (now)${NC} → ${CYAN}Local (auto-switch when ready)${NC}"
 echo -e "  ${DIM}Time${NC}         ${MINS}m ${SECS}s"
 echo -e "  ${DIM}Home${NC}         $MIRRORAI_HOME"
 echo -e "  ${DIM}Log${NC}          $LOG"
 echo ""
-
-if [ "$QUICK_MODE" = true ]; then
-    echo -e "  ${BOLD}Next steps (Phase 2 — complete setup):${NC}"
-    echo -e "  ${GREEN}1.${NC} mirrorai setup models             ${DIM}# Pull AI models${NC}"
-    echo -e "  ${GREEN}2.${NC} mirrorai setup vectordb            ${DIM}# Start ChromaDB${NC}"
-    echo -e "  ${GREEN}3.${NC} mirrorai setup full                ${DIM}# All of the above${NC}"
-    echo -e "  ${GREEN}4.${NC} mirrorai doctor                    ${DIM}# Health check${NC}"
-    echo ""
-    echo -e "  ${BOLD}Or start using now (cloud mode):${NC}"
-    echo -e "  ${GREEN}1.${NC} mirrorai init                      ${DIM}# Setup wizard${NC}"
-    echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
-    echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable            ${DIM}# Start AI clone${NC}"
-else
-    echo -e "  ${BOLD}Next steps:${NC}"
-    echo -e "  ${GREEN}1.${NC} mirrorai init                    ${DIM}# Setup wizard${NC}"
-    echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
-    echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable          ${DIM}# Start AI clone${NC}"
-fi
+echo -e "  ${BOLD}You can use MirrorAI right now (cloud mode):${NC}"
+echo -e "  ${GREEN}1.${NC} mirrorai init                    ${DIM}# Setup wizard${NC}"
+echo -e "  ${GREEN}2.${NC} mirrorai ingest --platform=telegram --file=~/Downloads/result.json"
+echo -e "  ${GREEN}3.${NC} mirrorai mirror --enable          ${DIM}# Start AI clone${NC}"
+echo ""
+echo -e "  ${DIM}Background:${NC} Ollama + AI models + ChromaDB installing..."
+echo -e "  ${DIM}Progress:${NC}   tail -f $PHASE2_LOG"
+echo -e "  ${DIM}Check:${NC}      mirrorai doctor"
+echo -e "  ${DIM}When done:${NC}  Auto-switches to local mode + macOS notification"
 echo ""
 
-if [ "$USE_CLOUD_LLM" = true ]; then
-    echo -e "  ${YELLOW}${BOLD}Important:${NC} Cloud mode requires API key:"
+if [ "$USE_CLOUD_LLM" != true ]; then
+    echo -e "  ${YELLOW}${BOLD}Tip:${NC} Set GEMINI_API_KEY for cloud mode while models download:"
     echo -e "  ${GREEN}\$${NC} echo 'GEMINI_API_KEY=your-key-here' >> ~/.mirrorai/.env"
     echo -e "  ${DIM}Get free key: https://aistudio.google.com/apikey${NC}"
     echo ""
