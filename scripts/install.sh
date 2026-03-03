@@ -666,8 +666,23 @@ if [ "$USE_CLOUD_LLM" = true ]; then
     MODEL_FALLBACK="deepseek/deepseek-chat"
 fi
 
-# Generate .env
-cat > "$MIRRORAI_HOME/.env" << ENVEOF
+# Generate .env — preserve existing values on reinstall
+if [ -f "$MIRRORAI_HOME/.env" ]; then
+    log "Existing .env found — preserving user config"
+    # Add any new keys that don't exist yet (without overwriting)
+    for key in OLLAMA_URL CHROMADB_URL LOG_LEVEL GEMINI_API_KEY; do
+        if ! grep -q "^${key}=" "$MIRRORAI_HOME/.env" 2>/dev/null; then
+            case $key in
+                OLLAMA_URL)   echo "${key}=http://localhost:${OLLAMA_PORT}" >> "$MIRRORAI_HOME/.env" ;;
+                CHROMADB_URL) echo "${key}=http://localhost:${CHROMADB_PORT}" >> "$MIRRORAI_HOME/.env" ;;
+                LOG_LEVEL)    echo "${key}=info" >> "$MIRRORAI_HOME/.env" ;;
+                *)            echo "${key}=" >> "$MIRRORAI_HOME/.env" ;;
+            esac
+        fi
+    done
+    ok ".env preserved (existing config kept)"
+else
+    cat > "$MIRRORAI_HOME/.env" << ENVEOF
 # ═══════════════════════════════════════════════════════
 # MirrorAI — Auto-generated $(date +%Y-%m-%d)
 # macOS $OS_VERSION ($ARCH) — Tier $COMPAT_TIER
@@ -696,7 +711,8 @@ CHROMADB_URL=http://localhost:${CHROMADB_PORT}
 # ── Logging ────────────────────────────────────────────
 LOG_LEVEL=info
 ENVEOF
-ok ".env generated"
+    ok ".env generated"
+fi
 
 # Generate config
 cat > "$MIRRORAI_HOME/mirrorai.config.yaml" << YAMLEOF
