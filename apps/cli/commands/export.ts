@@ -79,42 +79,33 @@ export const exportCommand = new Command("export")
     mkdirSync(EXPORT_DIR, { recursive: true });
     mkdirSync(SESSION_DIR, { recursive: true });
 
-    // Check if session exists → skip phone prompt
-    let phone = options.phone || env.TELEGRAM_PHONE || process.env.TELEGRAM_PHONE;
+    // Check if session exists → skip phone prompt entirely
+    let phone = options.phone;
     const sessionExists = hasSession();
 
     if (sessionExists) {
       console.log("  ✓ Đã đăng nhập trước đó — bỏ qua đăng nhập");
-      console.log(`  ℹ Session: ${SESSION_FILE}`);
-      if (env.TELEGRAM_SELF_NAME) {
-        console.log(`  👤 Tài khoản: ${env.TELEGRAM_SELF_NAME}`);
-      }
       console.log(`  ℹ Dùng --logout để đăng nhập tài khoản khác\n`);
-    } else if (!phone) {
-      // First time — need phone
-      console.log("  Lần đầu sử dụng — cần đăng nhập Telegram\n");
-      try {
-        const inquirer = await import("inquirer");
-        const answers = await inquirer.default.prompt([
-          {
-            type: "input",
-            name: "phone",
-            message: "Số điện thoại Telegram (VD: +84901234567):",
-            validate: (v: string) => (v.startsWith("+") && v.length >= 10) || "Nhập đúng format: +84...",
-          },
-        ]);
-        phone = answers.phone;
-
-        // Save for reference
-        const envFile = join(MIRRORAI_HOME, ".env");
-        let content = existsSync(envFile) ? readFileSync(envFile, "utf-8") : "";
-        if (!content.includes("TELEGRAM_PHONE=")) {
-          content += `\nTELEGRAM_PHONE=${phone}\n`;
-          writeFileSync(envFile, content);
+    } else {
+      // First time — need phone (KHÔNG lưu phone vào .env)
+      if (!phone) {
+        console.log("  Lần đầu sử dụng — cần đăng nhập Telegram");
+        console.log("  (Chỉ cần 1 lần, sau đó tự nhớ)\n");
+        try {
+          const inquirer = await import("inquirer");
+          const answers = await inquirer.default.prompt([
+            {
+              type: "input",
+              name: "phone",
+              message: "Số điện thoại Telegram (VD: +84901234567):",
+              validate: (v: string) => (v.startsWith("+") && v.length >= 10) || "Nhập đúng format: +84...",
+            },
+          ]);
+          phone = answers.phone;
+        } catch {
+          console.error("  ✗ Chạy lại với: mirrorai export --phone +84901234567");
+          process.exit(1);
         }
-      } catch {
-        console.error("  ✗ Chạy lại với: mirrorai export --phone +84901234567");
-        process.exit(1);
       }
     }
 
