@@ -4,6 +4,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["skills/**/*.ts"],
+  "include": ["skills/**/*.ts", "types/**/*.d.ts"],
   "exclude": ["dist", "node_modules"]
 }

@@ -13,6 +13,18 @@ const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 const PENDING_QUEUE = join(MIRRORAI_HOME, "pending_queue.jsonl");
 const LOG_FILE = join(MIRRORAI_HOME, "logs", "persona-update.log");
 
+// ─── OpenClaw Skill Metadata ────────────────────────────────────────────────
+export const skillMeta = {
+  id: "persona-update",
+  name: "Persona Update",
+  description: "Periodically update persona from new messages",
+  trigger: "cron",
+  cron: "*/30 * * * *",
+  channels: [],
+  requires: ["chromadb", "ollama", "python3"],
+  envKeys: [],
+};
+
 function log(message: string): void {
   const entry = `[${new Date().toISOString()}] ${message}`;
   console.log(entry);
@@ -120,8 +132,6 @@ if messages:
 }
 
 export default {
-  name: "persona-update",
-  description: "Periodically update persona from new messages",
-  cron: "*/30 * * * *", // Every 30 minutes
+  ...skillMeta,
   handler: updatePersona,
 };

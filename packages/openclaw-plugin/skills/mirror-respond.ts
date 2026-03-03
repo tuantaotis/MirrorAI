@@ -17,6 +17,17 @@ const STATE_FILE = join(MIRRORAI_HOME, "state.json");
 const LOG_FILE = join(MIRRORAI_HOME, "logs", "mirror.log");
 const REVIEW_QUEUE = join(MIRRORAI_HOME, "review_queue.jsonl");
 
+// ─── OpenClaw Skill Metadata ────────────────────────────────────────────────
+export const skillMeta = {
+  id: "mirror-respond",
+  name: "Mirror Respond",
+  description: "Respond to messages as the user's AI persona",
+  trigger: "message",
+  channels: ["telegram", "zalo", "zalouser", "facebook", "instagram", "discord", "whatsapp"],
+  requires: ["chromadb", "ollama", "python3"],
+  envKeys: [],
+};
+
 interface IncomingMessage {
   platform: string;
   threadId: string;
@@ -189,7 +200,6 @@ export async function handleIncomingMessage(message: IncomingMessage): Promise<v
     await new Promise((resolve) => setTimeout(resolve, delay));
 
     // Send via OpenClaw messaging
-    // In production: openclaw message send --channel <platform> --target <threadId> --message <text>
     logMirrorEvent({
       event: "auto_reply",
       platform: message.platform,
@@ -209,7 +219,6 @@ export async function handleIncomingMessage(message: IncomingMessage): Promise<v
 
 // Export for OpenClaw skill registration
 export default {
-  name: "mirror-respond",
-  description: "Respond to messages as the user's AI persona",
+  ...skillMeta,
   handler: handleIncomingMessage,
 };

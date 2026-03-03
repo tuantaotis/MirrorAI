@@ -9,6 +9,17 @@ import { join } from "node:path";
 
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 
+// ─── OpenClaw Skill Metadata ────────────────────────────────────────────────
+export const skillMeta = {
+  id: "persona-status",
+  name: "Persona Status",
+  description: "Show persona diagnostics and stats",
+  trigger: "command",
+  channels: [],
+  requires: [],
+  envKeys: [],
+};
+
 export async function showPersonaStatus(): Promise<string> {
   const lines: string[] = [];
   lines.push("╔════════════════════════════════════════╗");
@@ -72,7 +83,6 @@ export async function showPersonaStatus(): Promise<string> {
 }
 
 export default {
-  name: "persona-status",
-  description: "Show persona diagnostics and stats",
+  ...skillMeta,
   handler: showPersonaStatus,
 };

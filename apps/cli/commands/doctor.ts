@@ -1,6 +1,7 @@
 /**
  * MirrorAI CLI — Health Check (Doctor) Command
  * Checks all services and reports status.
+ * Dynamically loads envKeys from export-* skill metadata.
  */
 
 import { Command } from "commander";
@@ -42,9 +43,34 @@ function cmdExists(cmd: string): boolean {
   }
 }
 
+/** Load all envKeys from export-* skill metadata */
+async function loadSkillEnvKeys(): Promise<Record<string, string[]>> {
+  const result: Record<string, string[]> = {};
+  const projectRoot = process.cwd();
+  const skillsDir = path.join(projectRoot, "packages", "openclaw-plugin", "skills");
+
+  if (!fs.existsSync(skillsDir)) return result;
+
+  const files = fs.readdirSync(skillsDir).filter(
+    (f) => f.startsWith("export-") && f.endsWith(".ts")
+  );
+
+  for (const file of files) {
+    try {
+      const mod = await import(path.join(skillsDir, file));
+      const meta = mod.metadata || mod.default?.metadata;
+      if (meta?.id && meta?.envKeys?.length) {
+        result[meta.id] = meta.envKeys;
+      }
+    } catch { /* skip */ }
+  }
+
+  return result;
+}
+
 export const doctorCommand = new Command("doctor")
   .description("Run health check on all MirrorAI services")
-  .action(() => {
+  .action(async () => {
     console.log("");
     console.log("╔═══════════════════════════════════════════════╗");
     console.log("║   🩺 MirrorAI — Health Check                 ║");
@@ -55,35 +81,24 @@ export const doctorCommand = new Command("doctor")
     let total = 0;
 
     // Core tools
-    total++;
-    if (check("Node.js", () => cmdExists("node"))) pass++;
-
-    total++;
-    if (check("Python", () => cmdExists("python3"))) pass++;
-
-    total++;
-    if (check("Git", () => cmdExists("git"))) pass++;
+    total++; if (check("Node.js", () => cmdExists("node"))) pass++;
+    total++; if (check("Python", () => cmdExists("python3"))) pass++;
+    total++; if (check("Git", () => cmdExists("git"))) pass++;
 
     // App directory
-    total++;
-    if (check("App directory", () => fs.existsSync(path.join(MIRRORAI_HOME, "app", "package.json")))) pass++;
+    total++; if (check("App directory", () => fs.existsSync(path.join(MIRRORAI_HOME, "app", "package.json")))) pass++;
 
     // Venv
-    total++;
-    if (check("Python venv", () => fs.existsSync(path.join(MIRRORAI_HOME, "app", ".venv", "bin", "python3")))) pass++;
+    total++; if (check("Python venv", () => fs.existsSync(path.join(MIRRORAI_HOME, "app", ".venv", "bin", "python3")))) pass++;
 
     // Ollama
     total++;
     if (check("Ollama", () => isPortOpen(OLLAMA_PORT))) {
       pass++;
-
-      // Check models
       try {
         const list = execSync("ollama list", { encoding: "utf-8" });
-        total++;
-        if (check("Embedding model", () => list.includes("nomic-embed-text"))) pass++;
-        total++;
-        if (check("Chat model", () => list.includes("qwen2.5"))) pass++;
+        total++; if (check("Embedding model", () => list.includes("nomic-embed-text"))) pass++;
+        total++; if (check("Chat model", () => list.includes("qwen2.5"))) pass++;
       } catch {}
     } else {
       console.log("           → run: brew services start ollama");
@@ -98,17 +113,35 @@ export const doctorCommand = new Command("doctor")
     }
 
     // Config files
-    total++;
-    if (check("Config", () => fs.existsSync(path.join(MIRRORAI_HOME, "mirrorai.config.yaml")))) pass++;
+    total++; if (check("Config", () => fs.existsSync(path.join(MIRRORAI_HOME, "mirrorai.config.yaml")))) pass++;
+    total++; if (check(".env", () => fs.existsSync(path.join(MIRRORAI_HOME, ".env")))) pass++;
 
-    total++;
-    if (check(".env", () => fs.existsSync(path.join(MIRRORAI_HOME, ".env")))) pass++;
+    // Check envKeys from skill metadata
+    const envFile = path.join(MIRRORAI_HOME, ".env");
+    let envContent = "";
+    if (fs.existsSync(envFile)) envContent = fs.readFileSync(envFile, "utf-8");
 
-    // State
-    let state: Record<string, unknown> = {};
+    const skillEnvKeys = await loadSkillEnvKeys();
+    const state: Record<string, unknown> = {};
     try {
-      state = JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
+      Object.assign(state, JSON.parse(fs.readFileSync(STATE_PATH, "utf-8")));
     } catch {}
+
+    const enabledPlatforms = Object.entries((state.platforms || {}) as Record<string, any>)
+      .filter(([_, conf]) => conf.enabled)
+      .map(([name]) => name);
+
+    if (enabledPlatforms.length > 0) {
+      console.log("\n  Platform env vars:");
+      for (const platform of enabledPlatforms) {
+        const keys = skillEnvKeys[platform] || [];
+        for (const key of keys) {
+          const hasKey = envContent.includes(`${key}=`) && !envContent.includes(`${key}=\n`);
+          total++;
+          if (check(`  ${key}`, () => hasKey)) pass++;
+        }
+      }
+    }
 
     console.log("");
     console.log("──────────────────────────────────────────────");

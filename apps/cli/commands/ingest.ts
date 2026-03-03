@@ -1,7 +1,7 @@
 /**
  * MirrorAI CLI — `mirrorai ingest`
  * Trigger data collection from configured platforms.
- * Runs the full pipeline: normalize → clean → chunk → embed → index → persona → SOUL.md
+ * Delegates to export-* skill handlers for platform-specific logic.
  */
 
 import { Command } from "commander";
@@ -14,21 +14,38 @@ import { fileURLToPath } from "node:url";
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 const STATE_FILE = join(MIRRORAI_HOME, "state.json");
 
-/** Find the project root (where packages/core/ lives) */
 function findProjectRoot(): string {
-  // Try relative to CLI dist/ location
   const cliDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-  const candidates = [
-    resolve(cliDir, ".."),          // apps/cli/../../ = project root
-    resolve(cliDir, "..", ".."),     // fallback
-    process.cwd(),                   // current dir
-  ];
+  const candidates = [resolve(cliDir, ".."), resolve(cliDir, "..", ".."), process.cwd()];
   for (const c of candidates) {
-    if (existsSync(join(c, "packages", "core", "run_pipeline.py"))) {
-      return c;
-    }
+    if (existsSync(join(c, "packages", "core", "run_pipeline.py"))) return c;
   }
   return candidates[0];
+}
+
+function loadEnv(): Record<string, string> {
+  const envFile = join(MIRRORAI_HOME, ".env");
+  const vars: Record<string, string> = {};
+  if (existsSync(envFile)) {
+    for (const line of readFileSync(envFile, "utf-8").split("\n")) {
+      const m = line.match(/^([^#=]+)=(.*)$/);
+      if (m) vars[m[1].trim()] = m[2].trim();
+    }
+  }
+  return vars;
+}
+
+/** Load export skill metadata to get envKeys */
+async function loadSkillMeta(platformId: string) {
+  const projectRoot = findProjectRoot();
+  const skillFile = join(projectRoot, "packages", "openclaw-plugin", "skills", `export-${platformId}.ts`);
+  if (!existsSync(skillFile)) return null;
+  try {
+    const mod = await import(skillFile);
+    return mod.metadata || mod.default?.metadata || null;
+  } catch {
+    return null;
+  }
 }
 
 export const ingestCommand = new Command("ingest")
@@ -39,13 +56,13 @@ export const ingestCommand = new Command("ingest")
   .action(async (options) => {
     console.log("\n[MirrorAI] Starting data ingestion...\n");
 
-    // Load state
     if (!existsSync(STATE_FILE)) {
       console.error("✗ Not initialized. Run: mirrorai init");
       process.exit(1);
     }
 
     const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+    const envVars = loadEnv();
 
     // Determine which platforms to ingest
     const platforms = options.platform
@@ -63,22 +80,9 @@ export const ingestCommand = new Command("ingest")
 
     if (options.dryRun) {
       console.log("\n[Dry Run] Would ingest from:", platforms);
-      console.log("[Dry Run] No changes made.");
       return;
     }
 
-    // Load .env for bot token etc.
-    const envFile = join(MIRRORAI_HOME, ".env");
-    const envVars: Record<string, string> = {};
-    if (existsSync(envFile)) {
-      const envContent = readFileSync(envFile, "utf-8");
-      for (const line of envContent.split("\n")) {
-        const match = line.match(/^([^#=]+)=(.*)$/);
-        if (match) envVars[match[1].trim()] = match[2].trim();
-      }
-    }
-
-    // Update state → COLLECTING_DATA
     state.state = "COLLECTING_DATA";
     state.updatedAt = new Date().toISOString();
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -89,92 +93,80 @@ export const ingestCommand = new Command("ingest")
     for (const platform of platforms) {
       console.log(`\n── ${platform.toUpperCase()} ──────────────────────`);
 
-      if (platform === "telegram") {
-        const exportPath = options.file
-          || envVars.TELEGRAM_EXPORT_PATH
-          || process.env.TELEGRAM_EXPORT_PATH;
+      // Find export file from options, env, or auto-export result
+      const envKey = `${platform.toUpperCase()}_EXPORT_PATH`;
+      const autoExportFile = join(MIRRORAI_HOME, "data", "exports", "result.json");
+      const exportPath = options.file
+        || envVars[envKey]
+        || process.env[envKey]
+        || (existsSync(autoExportFile) ? autoExportFile : null);
 
-        // Check for auto-exported file
-        const autoExportFile = join(MIRRORAI_HOME, "data", "exports", "result.json");
-        const finalExportPath = exportPath
-          || (existsSync(autoExportFile) ? autoExportFile : null);
-
-        if (!finalExportPath || !existsSync(finalExportPath)) {
-          console.log("  No export file found.\n");
-          console.log("  Option 1 (auto): mirrorai export");
-          console.log("    → Auto-download chat history from Telegram (requires API credentials)\n");
-          console.log("  Option 2 (manual): Export from Telegram Desktop:");
-          console.log("    → Settings → Advanced → Export Telegram Data → JSON");
-          console.log("    → mirrorai ingest --platform=telegram --file=<path>\n");
-          continue;
-        }
-
-        console.log(`Export file: ${finalExportPath}`);
-
-        // Determine self ID from .env or state
-        const selfId = envVars.TELEGRAM_SELF_NAME
-          || envVars.TELEGRAM_SELF_ID
-          || state.selfId
-          || "Me";
-
-        console.log(`Self ID: ${selfId}`);
-        console.log(`Data dir: ${MIRRORAI_HOME}`);
-        console.log("");
-
-        // Run Python pipeline orchestrator
-        const cmd = [
-          "python3", "-m", "packages.core.run_pipeline",
-          "--export-path", `"${resolve(finalExportPath)}"`,
-          "--self-id", `"${selfId}"`,
-          "--data-dir", `"${MIRRORAI_HOME}"`,
-          "--platform", platform,
-        ].join(" ");
-
-        console.log(`Running: ${cmd}\n`);
-
-        try {
-          const output = execSync(cmd, {
-            cwd: projectRoot,
-            stdio: ["inherit", "pipe", "inherit"],
-            env: { ...process.env, ...envVars, PYTHONPATH: projectRoot },
-            timeout: 600_000, // 10 min max
-          });
-
-          const stdout = output.toString();
-          // Print pipeline output
-          for (const line of stdout.split("\n")) {
-            if (line.startsWith("__PIPELINE_STATS__")) {
-              try {
-                const stats = JSON.parse(line.replace("__PIPELINE_STATS__", ""));
-                console.log(`\n── PIPELINE RESULTS ────────────────────`);
-                console.log(`  Messages normalized: ${stats.steps?.normalize?.messages || "?"}`);
-                console.log(`  Messages cleaned:    ${stats.steps?.clean?.after || "?"}`);
-                console.log(`  Chunks created:      ${stats.steps?.chunk?.chunks || "?"}`);
-                console.log(`  Vectors indexed:     ${stats.steps?.index?.indexed || "?"}`);
-                console.log(`  Total time:          ${stats.total_duration_s || "?"}s`);
-                pipelineSuccess = stats.status === "success";
-              } catch { /* ignore parse errors */ }
-            } else if (line.trim()) {
-              console.log(line);
-            }
+      if (!exportPath || !existsSync(exportPath)) {
+        const meta = await loadSkillMeta(platform);
+        console.log("  No export file found.\n");
+        console.log("  Option 1 (auto): mirrorai export");
+        if (meta?.manualExportGuide?.length) {
+          console.log(`  Option 2 (manual):`);
+          for (const step of meta.manualExportGuide) {
+            console.log(`    ${step}`);
           }
-        } catch (err: any) {
-          console.error(`\n✗ Pipeline failed: ${err.message}`);
-          console.error("  Check logs: ~/.mirrorai/logs/pipeline.log");
-          console.error("  Common issues:");
-          console.error("    - Python packages not installed: pip install chromadb httpx pyyaml");
-          console.error("    - Ollama not running: ollama serve");
-          console.error("    - ChromaDB not running: docker run -p 8000:8000 chromadb/chroma");
         }
+        console.log(`  Then: mirrorai ingest --platform=${platform} --file=<path>\n`);
+        continue;
       }
 
-      if (platform === "zalo") {
-        console.log("Zalo connector: coming soon");
-        console.log("  Currently supports Telegram only");
+      console.log(`Export file: ${exportPath}`);
+
+      const selfId = envVars[`${platform.toUpperCase()}_SELF_NAME`]
+        || envVars[`${platform.toUpperCase()}_SELF_ID`]
+        || state.selfId || "Me";
+
+      console.log(`Self ID: ${selfId}`);
+
+      const cmd = [
+        "python3", "-m", "packages.core.run_pipeline",
+        "--export-path", `"${resolve(exportPath)}"`,
+        "--self-id", `"${selfId}"`,
+        "--data-dir", `"${MIRRORAI_HOME}"`,
+        "--platform", platform,
+      ].join(" ");
+
+      console.log(`Running: ${cmd}\n`);
+
+      try {
+        const output = execSync(cmd, {
+          cwd: projectRoot,
+          stdio: ["inherit", "pipe", "inherit"],
+          env: { ...process.env, ...envVars, PYTHONPATH: projectRoot },
+          timeout: 600_000,
+        });
+
+        const stdout = output.toString();
+        for (const line of stdout.split("\n")) {
+          if (line.startsWith("__PIPELINE_STATS__")) {
+            try {
+              const stats = JSON.parse(line.replace("__PIPELINE_STATS__", ""));
+              console.log(`\n── PIPELINE RESULTS ────────────────────`);
+              console.log(`  Messages normalized: ${stats.steps?.normalize?.messages || "?"}`);
+              console.log(`  Messages cleaned:    ${stats.steps?.clean?.after || "?"}`);
+              console.log(`  Chunks created:      ${stats.steps?.chunk?.chunks || "?"}`);
+              console.log(`  Vectors indexed:     ${stats.steps?.index?.indexed || "?"}`);
+              console.log(`  Total time:          ${stats.total_duration_s || "?"}s`);
+              pipelineSuccess = stats.status === "success";
+            } catch { /* ignore */ }
+          } else if (line.trim()) {
+            console.log(line);
+          }
+        }
+      } catch (err: any) {
+        console.error(`\n✗ Pipeline failed: ${err.message}`);
+        console.error("  Common issues:");
+        console.error("    - Python packages: pip install chromadb httpx pyyaml");
+        console.error("    - Ollama: ollama serve");
+        console.error("    - ChromaDB: docker run -p 8000:8000 chromadb/chroma");
       }
     }
 
-    // Update state
     state.state = pipelineSuccess ? "READY" : "CONFIGURING_PLATFORM";
     state.updatedAt = new Date().toISOString();
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -182,8 +174,6 @@ export const ingestCommand = new Command("ingest")
     if (pipelineSuccess) {
       console.log("\n════════════════════════════════════════");
       console.log(" ✓ Ingestion complete!");
-      console.log(" Data: ~/.mirrorai/data/");
-      console.log(" SOUL: ~/.mirrorai/data/SOUL.md");
       console.log(" Next: mirrorai mirror --enable");
       console.log("════════════════════════════════════════\n");
     } else {

@@ -10,6 +10,17 @@ import { join } from "node:path";
 
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 
+// ─── OpenClaw Skill Metadata ────────────────────────────────────────────────
+export const skillMeta = {
+  id: "data-ingest",
+  name: "Data Ingest",
+  description: "Bulk historical data ingestion — normalize, clean, chunk, embed, index, build persona",
+  trigger: "command",
+  channels: [],
+  requires: ["chromadb", "ollama", "python3"],
+  envKeys: ["TELEGRAM_EXPORT_PATH", "TELEGRAM_SELF_NAME"],
+};
+
 export async function runBulkIngest(options: {
   platform?: string;
   exportFile?: string;
@@ -95,7 +106,6 @@ print(f'\\nIngestion complete! {len(cleaned)} messages processed.')
 }
 
 export default {
-  name: "data-ingest",
-  description: "Bulk historical data ingestion",
+  ...skillMeta,
   handler: runBulkIngest,
 };

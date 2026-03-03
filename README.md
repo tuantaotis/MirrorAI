@@ -265,3 +265,46 @@ MIT
 ## Contributing
 
 PRs welcome. To add a new platform connector, see the "Adding a new platform" section above.
+
+---
+
+## OpenClaw Plugin
+
+MirrorAI is built as an [OpenClaw](https://openclaw.ai/) plugin. You can install it directly from ClawHub:
+
+```bash
+# Install via OpenClaw
+openclaw install mirrorai
+
+# Or clone and use directly
+git clone https://github.com/mirrorai/mirrorai.git
+cd mirrorai
+npm install
+npm run build
+```
+
+### Plugin Architecture
+
+Each chat platform is a self-contained skill file:
+
+```
+packages/openclaw-plugin/skills/
+  export-telegram.ts     # Auto-export + bot reply
+  export-zalo.ts         # Auto-export + bot reply
+  export-facebook.ts     # Manual export guide
+  export-instagram.ts    # Manual export guide
+  export-discord.ts      # Manual export guide
+  export-whatsapp.ts     # Manual export guide
+```
+
+**Adding a new platform?** Create one file, submit a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+### OpenClaw Skills
+
+| Skill | Trigger | Description |
+|-------|---------|-------------|
+| `mirror-respond` | message | RAG-powered persona response |
+| `data-ingest` | command | Bulk data pipeline |
+| `persona-update` | cron (30min) | Incremental persona refresh |
+| `persona-status` | command | Diagnostics & stats |
+| `export-*` | command | Platform data exporters |

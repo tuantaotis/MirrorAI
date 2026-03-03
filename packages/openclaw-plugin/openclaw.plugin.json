@@ -2,7 +2,12 @@
   "id": "mirrorai",
   "name": "MirrorAI",
   "version": "1.0.0",
-  "description": "AI Clone — mirror your persona across chat platforms",
+  "description": "AI Clone — mirror your persona across chat platforms. Learns your writing style from chat history and responds as you.",
+  "author": "MirrorAI Team",
+  "license": "MIT",
+  "repository": "https://github.com/mirrorai/mirrorai",
+  "homepage": "https://github.com/mirrorai/mirrorai",
+  "keywords": ["ai-clone", "persona", "rag", "chatbot", "telegram", "zalo"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -43,9 +48,37 @@
         "type": "integer",
         "default": 8000,
         "description": "Maximum response delay (ms)"
+      },
+      "model": {
+        "type": "string",
+        "default": "ollama/qwen2.5:14b",
+        "description": "AI model for response generation"
       }
     }
   },
-  "skills": ["skills"],
-  "channels": ["telegram", "zalo", "zalouser"]
+  "skills": [
+    "skills/mirror-respond.ts",
+    "skills/data-ingest.ts",
+    "skills/persona-update.ts",
+    "skills/persona-status.ts",
+    "skills/export-telegram.ts",
+    "skills/export-zalo.ts",
+    "skills/export-facebook.ts",
+    "skills/export-instagram.ts",
+    "skills/export-discord.ts",
+    "skills/export-whatsapp.ts"
+  ],
+  "channels": ["telegram", "zalo", "zalouser", "facebook", "instagram", "discord", "whatsapp"],
+  "platforms": {
+    "telegram": { "skill": "export-telegram", "status": "ready" },
+    "zalo": { "skill": "export-zalo", "status": "ready" },
+    "facebook": { "skill": "export-facebook", "status": "manual" },
+    "instagram": { "skill": "export-instagram", "status": "manual" },
+    "discord": { "skill": "export-discord", "status": "manual" },
+    "whatsapp": { "skill": "export-whatsapp", "status": "manual" }
+  },
+  "requires": {
+    "runtime": ["python3", "node"],
+    "services": ["chromadb", "ollama"]
+  }
 }

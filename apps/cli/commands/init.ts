@@ -1,14 +1,12 @@
 /**
  * MirrorAI CLI — `mirrorai init`
- * Interactive setup wizard for first-time configuration.
- * Supports multi-platform selection with smart data input flow.
+ * Interactive setup wizard — auto-discovers platforms from export-* skills.
  */
 
 import { Command } from "commander";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
@@ -18,122 +16,12 @@ const EXPORT_DIR = join(MIRRORAI_HOME, "data", "exports");
 const SESSION_DIR = join(MIRRORAI_HOME, "sessions");
 const LOG_DIR = join(MIRRORAI_HOME, "logs");
 
-// ─── Platform Registry ─────────────────────────────────────────────────────
-interface PlatformDef {
-  value: string;
-  name: string;
-  icon: string;
-  status: "ready" | "manual" | "coming_soon";
-  hasAutoExport: boolean;
-  hasBotReply: boolean;       // can this platform auto-reply via bot?
-  manualExportGuide: string[];
-}
-
-const SOCIAL_PLATFORMS: PlatformDef[] = [
-  {
-    value: "telegram",
-    name: "Telegram",
-    icon: "✈️ ",
-    status: "ready",
-    hasAutoExport: true,
-    hasBotReply: true,
-    manualExportGuide: [
-      "1. Open Telegram Desktop",
-      "2. Settings → Advanced → Export Telegram Data",
-      "3. Select: JSON format, Messages only",
-      "4. Export and note the output folder path",
-    ],
-  },
-  {
-    value: "zalo",
-    name: "Zalo",
-    icon: "💬",
-    status: "ready",
-    hasAutoExport: true,
-    hasBotReply: true,
-    manualExportGuide: [],
-  },
-  {
-    value: "facebook",
-    name: "Facebook Messenger",
-    icon: "📘",
-    status: "manual",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [
-      "1. Go to: facebook.com/dyi (Download Your Information)",
-      "2. Select format: JSON",
-      "3. Select: Messages only",
-      "4. Click 'Request a download'",
-      "5. Wait for email → download ZIP → extract",
-    ],
-  },
-  {
-    value: "instagram",
-    name: "Instagram DMs",
-    icon: "📸",
-    status: "manual",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [
-      "1. Go to: Instagram → Settings → Privacy & Security",
-      "2. Click 'Request Download' → Format: JSON",
-      "3. Wait for email → download ZIP → extract",
-    ],
-  },
-  {
-    value: "discord",
-    name: "Discord",
-    icon: "🎮",
-    status: "manual",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [
-      "1. Go to: Discord → User Settings → Privacy & Safety",
-      "2. Click 'Request all of my Data'",
-      "3. Wait for email → download ZIP → extract",
-    ],
-  },
-  {
-    value: "whatsapp",
-    name: "WhatsApp",
-    icon: "📱",
-    status: "manual",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [
-      "1. Open WhatsApp → select a chat",
-      "2. Menu → More → Export Chat → Without Media",
-      "3. Save the .txt file",
-      "4. Repeat for each chat you want",
-    ],
-  },
-  {
-    value: "line",
-    name: "LINE",
-    icon: "🟢",
-    status: "coming_soon",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [],
-  },
-  {
-    value: "viber",
-    name: "Viber",
-    icon: "🟣",
-    status: "coming_soon",
-    hasAutoExport: false,
-    hasBotReply: false,
-    manualExportGuide: [],
-  },
-];
-
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface PlatformState {
   enabled: boolean;
   configured: boolean;
-  dataSource: "auto" | "file" | "pending"; // how data will be collected
-  filePath?: string;                        // if user already has export file
+  dataSource: "auto" | "file" | "pending";
+  filePath?: string;
 }
 
 interface InitState {
@@ -142,6 +30,24 @@ interface InitState {
   model: string;
   createdAt: string;
   updatedAt: string;
+}
+
+interface ExportSkillMeta {
+  id: string;
+  displayName: string;
+  icon: string;
+  status: "ready" | "manual" | "coming_soon";
+  hasAutoExport: boolean;
+  hasBotReply: boolean;
+  manualExportGuide: string[];
+  envKeys: string[];
+}
+
+interface ExportSkill {
+  metadata: ExportSkillMeta;
+  detect: (env: Record<string, string>, home: string) => any;
+  setup: (inquirer: any, ctx: any) => Promise<PlatformState>;
+  autoExport?: (env: Record<string, string>, projectRoot: string) => Promise<boolean>;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -178,183 +84,30 @@ function saveEnvVars(updates: Record<string, string>): void {
   writeFileSync(ENV_FILE, content.trim() + "\n");
 }
 
-function getPlatformDef(value: string): PlatformDef {
-  return SOCIAL_PLATFORMS.find((p) => p.value === value)!;
-}
-
-/** Detect existing config/data for each platform */
-interface DetectedState {
-  hasSession: boolean;        // Telegram session exists (logged in)
-  hasExportData: boolean;     // Export result.json exists
-  exportMsgCount: number;     // Number of messages in existing export
-  exportChats: number;        // Number of chats exported
-  hasBotToken: boolean;       // Bot token configured in .env
-  botTokenMasked: string;     // Masked token for display
-  hasExportPath: boolean;     // Export path in .env
-  exportPath: string;         // Actual export path
-  selfName: string;           // Logged-in user name
-}
-
-function detectPlatformState(platform: string): DetectedState {
-  const env = loadEnv();
-  const state: DetectedState = {
-    hasSession: false,
-    hasExportData: false,
-    exportMsgCount: 0,
-    exportChats: 0,
-    hasBotToken: false,
-    botTokenMasked: "",
-    hasExportPath: false,
-    exportPath: "",
-    selfName: "",
-  };
-
-  if (platform === "telegram") {
-    // Check session
-    const sessionFile = join(SESSION_DIR, "mirrorai_session.session");
-    state.hasSession = existsSync(sessionFile);
-
-    // Check export data
-    const resultFile = join(EXPORT_DIR, "result.json");
-    if (existsSync(resultFile)) {
-      state.hasExportData = true;
-      try {
-        const data = JSON.parse(readFileSync(resultFile, "utf-8"));
-        state.exportMsgCount = data.messages?.length || 0;
-      } catch { /* ignore */ }
-    }
-
-    // Check export stats for chat count
-    const statsFile = join(EXPORT_DIR, "export_stats.json");
-    if (existsSync(statsFile)) {
-      try {
-        const stats = JSON.parse(readFileSync(statsFile, "utf-8"));
-        state.exportChats = stats.chats_exported || 0;
-        state.exportMsgCount = stats.total_messages || state.exportMsgCount;
-        state.selfName = stats.self_name || "";
-      } catch { /* ignore */ }
-    }
-
-    // Check bot token
-    const token = env.TELEGRAM_BOT_TOKEN || "";
-    if (token.length > 10) {
-      state.hasBotToken = true;
-      state.botTokenMasked = token.slice(0, 8) + "***" + token.slice(-4);
-    }
-
-    // Check export path
-    state.exportPath = env.TELEGRAM_EXPORT_PATH || "";
-    state.hasExportPath = !!state.exportPath && existsSync(state.exportPath);
-
-    // Self name from env
-    if (!state.selfName) state.selfName = env.TELEGRAM_SELF_NAME || "";
-  }
-
-  if (platform === "zalo") {
-    const token = env.ZALO_BOT_TOKEN || "";
-    if (token.length > 5) {
-      state.hasBotToken = true;
-      state.botTokenMasked = token.slice(0, 6) + "***";
-    }
-  }
-
-  // Manual platforms — check env for export path
-  if (["facebook", "instagram", "discord", "whatsapp"].includes(platform)) {
-    const key = `${platform.toUpperCase()}_EXPORT_PATH`;
-    state.exportPath = env[key] || "";
-    state.hasExportPath = !!state.exportPath && existsSync(state.exportPath);
-  }
-
-  return state;
-}
-
-// ─── Auto-export: Telegram ──────────────────────────────────────────────────
-async function autoExportTelegram(): Promise<boolean> {
-  console.log("\n  ── Auto-exporting Telegram ──────────────────");
-
-  const sessionFile = join(SESSION_DIR, "mirrorai_session.session");
-  const sessionExists = existsSync(sessionFile);
-  const env = loadEnv();
+/** Scan packages/openclaw-plugin/skills/export-*.ts to discover platforms */
+async function discoverPlatforms(): Promise<ExportSkill[]> {
   const projectRoot = findProjectRoot();
+  const skillsDir = join(projectRoot, "packages", "openclaw-plugin", "skills");
+  const skills: ExportSkill[] = [];
 
-  mkdirSync(EXPORT_DIR, { recursive: true });
-  mkdirSync(SESSION_DIR, { recursive: true });
+  if (!existsSync(skillsDir)) return skills;
 
-  let phone: string | undefined;
+  const files = readdirSync(skillsDir).filter(
+    (f) => f.startsWith("export-") && f.endsWith(".ts")
+  );
 
-  if (sessionExists) {
-    console.log("  ✓ Previously logged in — skipping login");
-  } else {
-    console.log("  First time — Telegram login required");
-    console.log("  (Only needed once, remembered afterwards)\n");
+  for (const file of files.sort()) {
     try {
-      const inquirer = await import("inquirer");
-      const answers = await inquirer.default.prompt([
-        {
-          type: "input",
-          name: "phone",
-          message: "Telegram phone number (e.g. +84901234567):",
-          validate: (v: string) =>
-            (v.startsWith("+") && v.length >= 10) || "Invalid format. Use: +84...",
-        },
-      ]);
-      phone = answers.phone;
-    } catch {
-      console.error("  ✗ Failed. Run separately: mirrorai export");
-      return false;
+      const mod = await import(join(skillsDir, file));
+      if (mod.metadata || mod.default?.metadata) {
+        skills.push(mod.default || mod);
+      }
+    } catch (err) {
+      console.error(`  Warning: Failed to load skill ${file}: ${err}`);
     }
   }
 
-  try {
-    execSync("python3 -c 'import telethon'", { stdio: "ignore" });
-  } catch {
-    console.log("  Installing Telethon...");
-    try {
-      execSync("pip3 install telethon", { stdio: "inherit" });
-    } catch {
-      console.error("  ✗ Install failed. Run: pip3 install telethon");
-      return false;
-    }
-  }
-
-  const cmdParts = [
-    "python3", "-m", "packages.core.telegram_exporter",
-    "--output", `"${EXPORT_DIR}"`,
-    "--limit", "5000",
-    "--filter", "all",
-    "--session-dir", `"${SESSION_DIR}"`,
-  ];
-  if (phone) cmdParts.push("--phone", `"${phone}"`);
-
-  if (!sessionExists) console.log("  OTP code will be sent via Telegram app.\n");
-
-  try {
-    // Use "inherit" for all stdio so user sees realtime progress
-    execSync(cmdParts.join(" "), {
-      cwd: projectRoot,
-      stdio: "inherit",
-      env: { ...process.env, ...env, PYTHONPATH: projectRoot },
-      timeout: 600_000,
-    });
-
-    // Read stats from file (Python exporter saves export_stats.json)
-    const statsFile = join(EXPORT_DIR, "export_stats.json");
-    if (existsSync(statsFile)) {
-      try {
-        const stats = JSON.parse(readFileSync(statsFile, "utf-8"));
-        saveEnvVars({
-          TELEGRAM_EXPORT_PATH: stats.combined_file || "",
-          TELEGRAM_SELF_NAME: stats.self_name || "",
-        });
-        return (stats.chats_exported || 0) > 0;
-      } catch { /* ignore */ }
-    }
-    return false;
-  } catch (err: any) {
-    console.error(`  ✗ Export failed: ${err.message}`);
-    console.error("  Run separately: mirrorai export");
-    return false;
-  }
+  return skills;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -370,8 +123,7 @@ export const initCommand = new Command("init")
     console.log("╚════════════════════════════════════════╝\n");
 
     // Ensure directories
-    for (const dir of [MIRRORAI_HOME, EXPORT_DIR, LOG_DIR, SESSION_DIR,
-                        join(MIRRORAI_HOME, "data")]) {
+    for (const dir of [MIRRORAI_HOME, EXPORT_DIR, LOG_DIR, SESSION_DIR, join(MIRRORAI_HOME, "data")]) {
       mkdirSync(dir, { recursive: true });
     }
 
@@ -382,10 +134,22 @@ export const initCommand = new Command("init")
       console.log("  ✓ Created .env from template");
     }
 
+    // Discover platforms from export-* skills
+    const skills = await discoverPlatforms();
+
+    if (skills.length === 0) {
+      console.error("  ✗ No export skills found. Check packages/openclaw-plugin/skills/export-*.ts");
+      process.exit(1);
+    }
+
     if (options.nonInteractive) {
+      const platformStates: Record<string, PlatformState> = {};
+      for (const skill of skills) {
+        platformStates[skill.metadata.id] = { enabled: false, configured: false, dataSource: "pending" };
+      }
       const state: InitState = {
         state: "CONFIGURING_PLATFORM",
-        platforms: { telegram: { enabled: false, configured: false, dataSource: "pending" } },
+        platforms: platformStates,
         model: "ollama/qwen2.5:14b",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -398,26 +162,25 @@ export const initCommand = new Command("init")
     // ── Interactive mode ─────────────────────────────────────────────────
     try {
       const inquirer = await import("inquirer");
+      const env = loadEnv();
       const envUpdates: Record<string, string> = {};
       const platformStates: Record<string, PlatformState> = {};
 
-      // ═════════════════════════════════════════════════════════════════
-      // STEP 1/5 — Select social platforms (multi-checkbox)
-      // ═════════════════════════════════════════════════════════════════
+      // ═══ STEP 1/5 — Select social platforms ═══
       console.log("  Step 1/5 — Select social platforms\n");
 
       const { selectedPlatforms } = await inquirer.default.prompt([{
         type: "checkbox",
         name: "selectedPlatforms",
         message: "Which platforms do you want to learn your chat style from?",
-        choices: SOCIAL_PLATFORMS.map((p) => ({
-          name: `${p.icon} ${p.name}` +
-            (p.hasAutoExport ? " (Auto-export)" : "") +
-            (p.status === "manual" ? " (Manual export)" : "") +
-            (p.status === "coming_soon" ? " (Coming soon)" : ""),
-          value: p.value,
-          checked: p.value === "telegram",
-          disabled: p.status === "coming_soon" ? "Coming soon" : false,
+        choices: skills.map((s) => ({
+          name: `${s.metadata.icon} ${s.metadata.displayName}` +
+            (s.metadata.hasAutoExport ? " (Auto-export)" : "") +
+            (s.metadata.status === "manual" ? " (Manual export)" : "") +
+            (s.metadata.status === "coming_soon" ? " (Coming soon)" : ""),
+          value: s.metadata.id,
+          checked: s.metadata.id === "telegram",
+          disabled: s.metadata.status === "coming_soon" ? "Coming soon" : false,
         })),
         validate: (input: string[]) => input.length > 0 || "Select at least one platform",
       }]);
@@ -425,201 +188,49 @@ export const initCommand = new Command("init")
       const selected = selectedPlatforms as string[];
       console.log(`\n  ✓ Selected ${selected.length} platform(s): ${selected.join(", ")}\n`);
 
-      // ═════════════════════════════════════════════════════════════════
-      // STEP 2/5 — Data source per platform (smart input)
-      // ═════════════════════════════════════════════════════════════════
+      // ═══ STEP 2/5 — Data source per platform (smart input) ═══
       console.log("  Step 2/5 — How to get your chat data\n");
 
-      for (const pv of selected) {
-        const def = getPlatformDef(pv);
-        console.log(`  ── ${def.icon} ${def.name} ──────────────────────────`);
+      for (const platformId of selected) {
+        const skill = skills.find((s) => s.metadata.id === platformId)!;
+        const meta = skill.metadata;
+        console.log(`  ── ${meta.icon} ${meta.displayName} ──────────────────────────`);
 
-        // ── Telegram ─────────────────────────────────────────────────
-        if (pv === "telegram") {
-          const detected = detectPlatformState("telegram");
+        const detected = skill.detect(env, MIRRORAI_HOME);
 
-          // Show detected state
-          if (detected.hasSession || detected.hasExportData || detected.hasBotToken) {
-            console.log("  ┌─ Detected existing config ─────────────");
-            if (detected.hasSession) {
-              console.log(`  │  ✅ Logged in${detected.selfName ? `: ${detected.selfName}` : ""}`);
-            }
-            if (detected.hasExportData) {
-              console.log(`  │  ✅ Export data: ${detected.exportMsgCount.toLocaleString()} messages from ${detected.exportChats} chats`);
-            }
-            if (detected.hasBotToken) {
-              console.log(`  │  ✅ Bot token: ${detected.botTokenMasked}`);
-            }
-            console.log("  └──────────────────────────────────────────\n");
-          }
-
-          // Build choices based on detected state
-          const telegramChoices: Array<{ name: string; value: string }> = [];
-
-          if (detected.hasExportData) {
-            telegramChoices.push({
-              name: `Keep existing data (${detected.exportMsgCount.toLocaleString()} messages)`,
-              value: "keep",
-            });
-            telegramChoices.push({
-              name: `Re-export (overwrite — ${detected.hasSession ? "no OTP needed" : "phone + OTP"})`,
-              value: "auto",
-            });
-          } else if (detected.hasSession) {
-            telegramChoices.push({
-              name: "Auto-export (already logged in — no OTP needed)",
-              value: "auto",
-            });
-          } else {
-            telegramChoices.push({
-              name: "Auto-export (phone + OTP, recommended)",
-              value: "auto",
-            });
-          }
-          telegramChoices.push({
-            name: "I already have a JSON export file",
-            value: "file",
-          });
-
-          const { telegramSource } = await inquirer.default.prompt([{
-            type: "list",
-            name: "telegramSource",
-            message: "How to get Telegram data?",
-            choices: telegramChoices,
-          }]);
-
-          if (telegramSource === "keep") {
-            platformStates.telegram = {
-              enabled: true, configured: true, dataSource: "file",
-              filePath: detected.exportPath || join(EXPORT_DIR, "result.json"),
-            };
-            console.log(`  ✓ Keeping existing export data\n`);
-          } else if (telegramSource === "file") {
-            const { filePath } = await inquirer.default.prompt([{
-              type: "input",
-              name: "filePath",
-              message: "Path to Telegram JSON export file:",
-              validate: (v: string) => {
-                if (!v.trim()) return "Path is required";
-                if (!existsSync(v.trim())) return `File not found: ${v}`;
-                return true;
-              },
-            }]);
-            envUpdates.TELEGRAM_EXPORT_PATH = resolve(filePath.trim());
-            platformStates.telegram = { enabled: true, configured: true, dataSource: "file", filePath: resolve(filePath.trim()) };
-            console.log(`  ✓ Will use: ${filePath.trim()}\n`);
-          } else {
-            platformStates.telegram = { enabled: true, configured: true, dataSource: "auto" };
-            if (detected.hasSession) {
-              console.log("  ✓ Will auto-export (already logged in)\n");
-            } else {
-              console.log("  ✓ Will auto-export after setup (phone + OTP)\n");
-            }
-          }
+        // Show detected state
+        if (detected.hasSession || detected.hasExportData || detected.hasBotToken) {
+          console.log("  ┌─ Detected existing config ─────────────");
+          if (detected.hasSession) console.log(`  │  ✅ Logged in${detected.selfName ? `: ${detected.selfName}` : ""}`);
+          if (detected.hasExportData) console.log(`  │  ✅ Export data: ${detected.exportMsgCount.toLocaleString()} messages from ${detected.exportChats} chats`);
+          if (detected.hasBotToken) console.log(`  │  ✅ Bot token: ${detected.botTokenMasked}`);
+          console.log("  └──────────────────────────────────────────\n");
         }
 
-        // ── Zalo ─────────────────────────────────────────────────────
-        if (pv === "zalo") {
-          const { zaloSource } = await inquirer.default.prompt([{
-            type: "list",
-            name: "zaloSource",
-            message: "How to get Zalo data?",
-            choices: [
-              { name: "Personal account — QR login (recommended)", value: "qr" },
-              { name: "Bot API token", value: "bot" },
-            ],
-          }]);
-
-          if (zaloSource === "bot") {
-            const { token } = await inquirer.default.prompt([{
-              type: "input",
-              name: "token",
-              message: "Zalo Bot Token:",
-              validate: (v: string) => v.trim().length > 5 || "Token looks too short",
-            }]);
-            envUpdates.ZALO_BOT_TOKEN = token.trim();
-          }
-          platformStates.zalo = { enabled: true, configured: true, dataSource: "auto" };
-          console.log("  ✓ Zalo configured\n");
-        }
-
-        // ── Manual platforms (Facebook, Instagram, Discord, WhatsApp) ──
-        if (["facebook", "instagram", "discord", "whatsapp"].includes(pv)) {
-          const detected = detectPlatformState(pv);
-
-          if (detected.hasExportPath) {
-            console.log(`  ┌─ Detected existing config ─────────────`);
-            console.log(`  │  ✅ Export path: ${detected.exportPath}`);
-            console.log(`  └──────────────────────────────────────────\n`);
-          }
-
-          const manualChoices: Array<{ name: string; value: string }> = [];
-          if (detected.hasExportPath) {
-            manualChoices.push({
-              name: `Keep existing (${detected.exportPath})`,
-              value: "keep",
-            });
-          }
-          manualChoices.push(
-            { name: "Yes, I have the exported file/folder", value: "yes" },
-            { name: "No, show me how to export", value: "no" },
-          );
-
-          const { hasFile } = await inquirer.default.prompt([{
-            type: "list",
-            name: "hasFile",
-            message: `Do you have ${def.name} export data?`,
-            choices: manualChoices,
-          }]);
-
-          if (hasFile === "keep") {
-            platformStates[pv] = { enabled: true, configured: true, dataSource: "file", filePath: detected.exportPath };
-            console.log(`  ✓ Keeping existing export path\n`);
-          } else if (hasFile === "yes") {
-            const { filePath } = await inquirer.default.prompt([{
-              type: "input",
-              name: "filePath",
-              message: `Path to ${def.name} export:`,
-              validate: (v: string) => {
-                if (!v.trim()) return "Path is required";
-                if (!existsSync(v.trim())) return `Not found: ${v}`;
-                return true;
-              },
-            }]);
-            const envKey = `${pv.toUpperCase()}_EXPORT_PATH`;
-            envUpdates[envKey] = resolve(filePath.trim());
-            platformStates[pv] = { enabled: true, configured: true, dataSource: "file", filePath: resolve(filePath.trim()) };
-            console.log(`  ✓ Will use: ${filePath.trim()}\n`);
-          } else {
-            console.log("");
-            console.log(`  ┌─ How to export ${def.name} data ─────────────`);
-            for (const step of def.manualExportGuide) {
-              console.log(`  │  ${step}`);
-            }
-            console.log(`  └──────────────────────────────────────────`);
-            console.log(`  ℹ After exporting, run: mirrorai ingest --platform=${pv} --file=<path>\n`);
-            platformStates[pv] = { enabled: true, configured: false, dataSource: "pending" };
-          }
-        }
+        const result = await skill.setup(inquirer, { env, envUpdates, detected });
+        platformStates[platformId] = result;
+        console.log(`  ✓ ${meta.displayName} configured\n`);
       }
 
-      // ═════════════════════════════════════════════════════════════════
-      // STEP 3/5 — Bot config (for AI reply mode)
-      // ═════════════════════════════════════════════════════════════════
-      const botPlatforms = selected.filter((p) => getPlatformDef(p).hasBotReply);
+      // ═══ STEP 3/5 — Bot config ═══
+      const botPlatforms = selected.filter((p) => {
+        const s = skills.find((s) => s.metadata.id === p);
+        return s?.metadata.hasBotReply;
+      });
 
       if (botPlatforms.length > 0) {
         console.log("  Step 3/5 — Bot config (for AI auto-reply)\n");
 
-        // Detect existing bot tokens
-        const tgDetected = detectPlatformState("telegram");
-        const zaloDetected = detectPlatformState("zalo");
-        const hasAnyToken = tgDetected.hasBotToken || zaloDetected.hasBotToken;
+        const detections = Object.fromEntries(
+          botPlatforms.map((p) => [p, skills.find((s) => s.metadata.id === p)!.detect(env, MIRRORAI_HOME)])
+        );
+        const hasAnyToken = Object.values(detections).some((d: any) => d.hasBotToken);
 
         if (hasAnyToken) {
           console.log("  ┌─ Detected existing bot config ─────────");
-          if (tgDetected.hasBotToken) console.log(`  │  ✅ Telegram bot: ${tgDetected.botTokenMasked}`);
-          if (zaloDetected.hasBotToken) console.log(`  │  ✅ Zalo bot: ${zaloDetected.botTokenMasked}`);
+          for (const [p, d] of Object.entries(detections)) {
+            if ((d as any).hasBotToken) console.log(`  │  ✅ ${p} bot: ${(d as any).botTokenMasked}`);
+          }
           console.log("  └──────────────────────────────────────────\n");
         } else {
           console.log("  ℹ To let your AI clone reply on your behalf, MirrorAI needs bot tokens.");
@@ -629,54 +240,32 @@ export const initCommand = new Command("init")
         const { configBot } = await inquirer.default.prompt([{
           type: "list",
           name: "configBot",
-          message: hasAnyToken
-            ? "Bot tokens already configured. What to do?"
-            : "Configure bot tokens now? (needed for auto-reply)",
+          message: hasAnyToken ? "Bot tokens already configured. What to do?" : "Configure bot tokens now?",
           choices: hasAnyToken
-            ? [
-                { name: "Keep existing tokens", value: "keep" },
-                { name: "Update tokens", value: "update" },
-                { name: "Skip (configure later)", value: "skip" },
-              ]
-            : [
-                { name: "Configure now", value: "update" },
-                { name: "Skip (configure later)", value: "skip" },
-              ],
+            ? [{ name: "Keep existing tokens", value: "keep" }, { name: "Update tokens", value: "update" }, { name: "Skip", value: "skip" }]
+            : [{ name: "Configure now", value: "update" }, { name: "Skip (configure later)", value: "skip" }],
         }]);
 
         if (configBot === "update") {
           if (botPlatforms.includes("telegram")) {
             const { token } = await inquirer.default.prompt([{
-              type: "input",
-              name: "token",
-              message: `Telegram Bot Token${tgDetected.hasBotToken ? ` (current: ${tgDetected.botTokenMasked})` : " (from @BotFather)"}:`,
+              type: "input", name: "token",
+              message: "Telegram Bot Token (from @BotFather):",
               validate: (v: string) => v.trim().length > 10 || "Token looks too short",
             }]);
             envUpdates.TELEGRAM_BOT_TOKEN = token.trim();
-            console.log("  ✓ Telegram bot token saved");
           }
           if (botPlatforms.includes("zalo") && !envUpdates.ZALO_BOT_TOKEN) {
             const { token } = await inquirer.default.prompt([{
-              type: "input",
-              name: "token",
-              message: `Zalo Bot/OA Token${zaloDetected.hasBotToken ? ` (current: ${zaloDetected.botTokenMasked})` : ""}:`,
+              type: "input", name: "token", message: "Zalo Bot/OA Token:",
             }]);
-            if (token.trim()) {
-              envUpdates.ZALO_BOT_TOKEN = token.trim();
-              console.log("  ✓ Zalo bot token saved");
-            }
+            if (token.trim()) envUpdates.ZALO_BOT_TOKEN = token.trim();
           }
           console.log("");
-        } else if (configBot === "keep") {
-          console.log("  ✓ Keeping existing bot tokens\n");
-        } else {
-          console.log("  ℹ Skip. Configure later: mirrorai init --platform=telegram\n");
         }
       }
 
-      // ═════════════════════════════════════════════════════════════════
-      // STEP 4/5 — Choose AI model
-      // ═════════════════════════════════════════════════════════════════
+      // ═══ STEP 4/5 — Choose AI model ═══
       console.log("  Step 4/5 — Choose AI model\n");
 
       const { model } = await inquirer.default.prompt([{
@@ -693,21 +282,15 @@ export const initCommand = new Command("init")
       }]);
 
       if (model.startsWith("anthropic/")) {
-        const { apiKey } = await inquirer.default.prompt([
-          { type: "password", name: "apiKey", message: "Anthropic API Key:" },
-        ]);
+        const { apiKey } = await inquirer.default.prompt([{ type: "password", name: "apiKey", message: "Anthropic API Key:" }]);
         envUpdates.ANTHROPIC_API_KEY = apiKey;
       } else if (model.startsWith("openai/")) {
-        const { apiKey } = await inquirer.default.prompt([
-          { type: "password", name: "apiKey", message: "OpenAI API Key:" },
-        ]);
+        const { apiKey } = await inquirer.default.prompt([{ type: "password", name: "apiKey", message: "OpenAI API Key:" }]);
         envUpdates.OPENAI_API_KEY = apiKey;
       }
 
       // Save .env
-      if (Object.keys(envUpdates).length > 0) {
-        saveEnvVars(envUpdates);
-      }
+      if (Object.keys(envUpdates).length > 0) saveEnvVars(envUpdates);
 
       // Save state
       const state: InitState = {
@@ -719,37 +302,31 @@ export const initCommand = new Command("init")
       };
       writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 
-      // ═════════════════════════════════════════════════════════════════
-      // STEP 5/5 — Auto-export data
-      // ═════════════════════════════════════════════════════════════════
-      const autoExportPlatforms = selected.filter(
-        (p) => platformStates[p]?.dataSource === "auto" && getPlatformDef(p).hasAutoExport
-      );
-      const fileReadyPlatforms = selected.filter(
-        (p) => platformStates[p]?.dataSource === "file"
-      );
+      // ═══ STEP 5/5 — Auto-export data ═══
+      const autoExportPlatforms = selected.filter((p) => {
+        const skill = skills.find((s) => s.metadata.id === p);
+        return platformStates[p]?.dataSource === "auto" && skill?.metadata.hasAutoExport && skill?.autoExport;
+      });
+      const fileReadyPlatforms = selected.filter((p) => platformStates[p]?.dataSource === "file");
       const exportResults: Record<string, boolean> = {};
 
       if (autoExportPlatforms.length > 0) {
         console.log("\n  Step 5/5 — Export data now\n");
 
+        const names = autoExportPlatforms.map((p) => skills.find((s) => s.metadata.id === p)!.metadata.displayName);
         const { exportNow } = await inquirer.default.prompt([{
-          type: "confirm",
-          name: "exportNow",
-          message: `Auto-export data from ${autoExportPlatforms.map((p) => getPlatformDef(p).name).join(", ")} now?`,
+          type: "confirm", name: "exportNow",
+          message: `Auto-export data from ${names.join(", ")} now?`,
           default: true,
         }]);
 
         if (exportNow) {
-          for (const pv of autoExportPlatforms) {
-            if (pv === "telegram") {
-              exportResults.telegram = await autoExportTelegram();
-            }
-            if (pv === "zalo") {
-              console.log("\n  ── Zalo Auto-Export ──────────────────────");
-              console.log("  ℹ Run: mirrorai export --platform=zalo");
-              console.log("  (QR login will be prompted)\n");
-              exportResults.zalo = false;
+          const projectRoot = findProjectRoot();
+          const allEnv = { ...env, ...envUpdates };
+          for (const platformId of autoExportPlatforms) {
+            const skill = skills.find((s) => s.metadata.id === platformId)!;
+            if (skill.autoExport) {
+              exportResults[platformId] = await skill.autoExport(allEnv, projectRoot);
             }
           }
         } else {
@@ -757,14 +334,9 @@ export const initCommand = new Command("init")
         }
       }
 
-      // Mark file-ready platforms as exported
-      for (const pv of fileReadyPlatforms) {
-        exportResults[pv] = true;
-      }
+      for (const pv of fileReadyPlatforms) exportResults[pv] = true;
 
-      // ═════════════════════════════════════════════════════════════════
-      // SUMMARY
-      // ═════════════════════════════════════════════════════════════════
+      // ═══ SUMMARY ═══
       const exported = Object.entries(exportResults).filter(([, v]) => v).map(([k]) => k);
       const pending = selected.filter((p) => !exported.includes(p));
 
@@ -772,19 +344,18 @@ export const initCommand = new Command("init")
       console.log("║              MirrorAI — Setup Complete                ║");
       console.log("╠══════════════════════════════════════════════════════╣");
 
-      // Platform status table
-      for (const pv of selected) {
-        const def = getPlatformDef(pv);
-        const ps = platformStates[pv];
+      for (const platformId of selected) {
+        const skill = skills.find((s) => s.metadata.id === platformId)!;
+        const ps = platformStates[platformId];
         let statusIcon = "⏳";
         let statusText = "Pending export";
-        if (exported.includes(pv)) {
+        if (exported.includes(platformId)) {
           statusIcon = "✅";
           statusText = ps?.filePath ? `File: ${ps.filePath}` : "Exported";
         } else if (ps?.dataSource === "auto") {
           statusText = "Auto-export available";
         }
-        const line = `${statusIcon} ${def.icon} ${def.name}`;
+        const line = `${statusIcon} ${skill.metadata.icon} ${skill.metadata.displayName}`;
         console.log(`║  ${line.padEnd(25)} ${statusText.padEnd(26)}║`);
       }
 
@@ -793,7 +364,6 @@ export const initCommand = new Command("init")
       console.log(`║  Config : ~/.mirrorai/                               ║`);
       console.log("╠══════════════════════════════════════════════════════╣");
 
-      // Next steps
       if (exported.length > 0 && pending.length === 0) {
         console.log("║  Next: mirrorai ingest                                ║");
       } else if (exported.length > 0) {
@@ -804,7 +374,6 @@ export const initCommand = new Command("init")
       }
       console.log("╚══════════════════════════════════════════════════════╝\n");
 
-      // Update final state
       state.state = exported.length > 0 ? "DATA_EXPORTED" : "CONFIGURING_PLATFORM";
       state.updatedAt = new Date().toISOString();
       writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
