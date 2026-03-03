@@ -1,17 +1,35 @@
 /**
  * MirrorAI CLI — `mirrorai ingest`
  * Trigger data collection from configured platforms.
- * Runs the full pipeline: collect → clean → chunk → embed → index.
+ * Runs the full pipeline: normalize → clean → chunk → embed → index → persona → SOUL.md
  */
 
 import { Command } from "commander";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 const STATE_FILE = join(MIRRORAI_HOME, "state.json");
+
+/** Find the project root (where packages/core/ lives) */
+function findProjectRoot(): string {
+  // Try relative to CLI dist/ location
+  const cliDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const candidates = [
+    resolve(cliDir, ".."),          // apps/cli/../../ = project root
+    resolve(cliDir, "..", ".."),     // fallback
+    process.cwd(),                   // current dir
+  ];
+  for (const c of candidates) {
+    if (existsSync(join(c, "packages", "core", "run_pipeline.py"))) {
+      return c;
+    }
+  }
+  return candidates[0];
+}
 
 export const ingestCommand = new Command("ingest")
   .description("Collect and process chat data from configured platforms")
@@ -49,69 +67,122 @@ export const ingestCommand = new Command("ingest")
       return;
     }
 
+    // Load .env for bot token etc.
+    const envFile = join(MIRRORAI_HOME, ".env");
+    const envVars: Record<string, string> = {};
+    if (existsSync(envFile)) {
+      const envContent = readFileSync(envFile, "utf-8");
+      for (const line of envContent.split("\n")) {
+        const match = line.match(/^([^#=]+)=(.*)$/);
+        if (match) envVars[match[1].trim()] = match[2].trim();
+      }
+    }
+
     // Update state → COLLECTING_DATA
     state.state = "COLLECTING_DATA";
     state.updatedAt = new Date().toISOString();
+    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+
+    const projectRoot = findProjectRoot();
+    let pipelineSuccess = false;
 
     for (const platform of platforms) {
       console.log(`\n── ${platform.toUpperCase()} ──────────────────────`);
 
       if (platform === "telegram") {
-        const exportPath = options.file || process.env.TELEGRAM_EXPORT_PATH;
-        if (exportPath && existsSync(exportPath)) {
-          console.log(`Parsing export: ${exportPath}`);
-          // Call Python pipeline
-          try {
-            execSync(
-              `python3 -m packages.core.data_pipeline.normalizer --platform telegram --file "${exportPath}"`,
-              { stdio: "inherit", cwd: join(process.cwd()) }
-            );
-          } catch {
-            console.log("[Telegram] Python pipeline not ready yet — connector parsed data directly");
-          }
-        } else {
-          console.log(
-            "No export file found. Export from Telegram Desktop:\n" +
+        const exportPath = options.file
+          || envVars.TELEGRAM_EXPORT_PATH
+          || process.env.TELEGRAM_EXPORT_PATH;
+
+        if (!exportPath || !existsSync(exportPath)) {
+          console.error(
+            "✗ No export file found. Export from Telegram Desktop:\n" +
               "  Settings → Advanced → Export Telegram Data → JSON format\n" +
               "  Then: mirrorai ingest --platform=telegram --file=<path>"
           );
+          continue;
+        }
+
+        console.log(`Export file: ${exportPath}`);
+
+        // Determine self ID from .env or state
+        const selfId = envVars.TELEGRAM_SELF_NAME
+          || envVars.TELEGRAM_SELF_ID
+          || state.selfId
+          || "Me";
+
+        console.log(`Self ID: ${selfId}`);
+        console.log(`Data dir: ${MIRRORAI_HOME}`);
+        console.log("");
+
+        // Run Python pipeline orchestrator
+        const cmd = [
+          "python3", "-m", "packages.core.run_pipeline",
+          "--export-path", `"${resolve(exportPath)}"`,
+          "--self-id", `"${selfId}"`,
+          "--data-dir", `"${MIRRORAI_HOME}"`,
+          "--platform", platform,
+        ].join(" ");
+
+        console.log(`Running: ${cmd}\n`);
+
+        try {
+          const output = execSync(cmd, {
+            cwd: projectRoot,
+            stdio: ["inherit", "pipe", "inherit"],
+            env: { ...process.env, ...envVars, PYTHONPATH: projectRoot },
+            timeout: 600_000, // 10 min max
+          });
+
+          const stdout = output.toString();
+          // Print pipeline output
+          for (const line of stdout.split("\n")) {
+            if (line.startsWith("__PIPELINE_STATS__")) {
+              try {
+                const stats = JSON.parse(line.replace("__PIPELINE_STATS__", ""));
+                console.log(`\n── PIPELINE RESULTS ────────────────────`);
+                console.log(`  Messages normalized: ${stats.steps?.normalize?.messages || "?"}`);
+                console.log(`  Messages cleaned:    ${stats.steps?.clean?.after || "?"}`);
+                console.log(`  Chunks created:      ${stats.steps?.chunk?.chunks || "?"}`);
+                console.log(`  Vectors indexed:     ${stats.steps?.index?.indexed || "?"}`);
+                console.log(`  Total time:          ${stats.total_duration_s || "?"}s`);
+                pipelineSuccess = stats.status === "success";
+              } catch { /* ignore parse errors */ }
+            } else if (line.trim()) {
+              console.log(line);
+            }
+          }
+        } catch (err: any) {
+          console.error(`\n✗ Pipeline failed: ${err.message}`);
+          console.error("  Check logs: ~/.mirrorai/logs/pipeline.log");
+          console.error("  Common issues:");
+          console.error("    - Python packages not installed: pip install chromadb httpx pyyaml");
+          console.error("    - Ollama not running: ollama serve");
+          console.error("    - ChromaDB not running: docker run -p 8000:8000 chromadb/chroma");
         }
       }
 
       if (platform === "zalo") {
-        console.log("Fetching Zalo history via zca-cli...");
-        console.log("(Rate-limited: ~200ms per API call)");
-        // In production, this calls ZaloConnector.collectHistorical()
+        console.log("Zalo connector: coming soon");
+        console.log("  Currently supports Telegram only");
       }
     }
 
-    // Pipeline steps
-    console.log("\n── PIPELINE ────────────────────────────");
-    console.log("Step 1/4: Normalizing messages...");
-    console.log("Step 2/4: Cleaning & filtering...");
-    console.log("Step 3/4: Chunking (512 tokens, 50 overlap)...");
-    console.log("Step 4/4: Embedding & indexing to ChromaDB...");
-
-    // Call Python persona builder
-    console.log("\n── PERSONA ─────────────────────────────");
-    try {
-      execSync("python3 -m packages.core.persona_builder.analyzer", {
-        stdio: "inherit",
-        cwd: process.cwd(),
-      });
-    } catch {
-      console.log("[Persona] Builder not ready yet — will be available after Python setup");
-    }
-
     // Update state
-    state.state = "READY";
+    state.state = pipelineSuccess ? "READY" : "CONFIGURING_PLATFORM";
     state.updatedAt = new Date().toISOString();
-
-    const { writeFileSync } = await import("node:fs");
     writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 
-    console.log("\n════════════════════════════════════════");
-    console.log(" ✓ Ingestion complete!");
-    console.log(" Next step: mirrorai mirror --enable");
-    console.log("════════════════════════════════════════\n");
+    if (pipelineSuccess) {
+      console.log("\n════════════════════════════════════════");
+      console.log(" ✓ Ingestion complete!");
+      console.log(" Data: ~/.mirrorai/data/");
+      console.log(" SOUL: ~/.mirrorai/data/SOUL.md");
+      console.log(" Next: mirrorai mirror --enable");
+      console.log("════════════════════════════════════════\n");
+    } else {
+      console.log("\n════════════════════════════════════════");
+      console.log(" ✗ Ingestion incomplete. Fix errors above and retry.");
+      console.log("════════════════════════════════════════\n");
+    }
   });

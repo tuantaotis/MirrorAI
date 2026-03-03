@@ -17,6 +17,8 @@ import type {
 import { parseTelegramExport } from "./export-parser.js";
 import { createRealtimeCapture } from "./realtime.js";
 
+const TELEGRAM_API = "https://api.telegram.org";
+
 export class TelegramConnector extends SocialConnector {
   readonly platform = "telegram";
   readonly displayName = "Telegram";
@@ -84,15 +86,12 @@ export class TelegramConnector extends SocialConnector {
     this.realtimeHandler = handler;
     console.log("[Telegram] Real-time capture enabled");
 
-    // Create the middleware — to be injected into OpenClaw's grammY bot
     const _middleware = createRealtimeCapture(
       { botToken: this.botToken, selfId: this.selfId },
       handler
     );
 
-    // In OpenClaw integration, this middleware is registered via:
-    // openclaw channels telegram → grammY middleware pipeline
-    console.log("[Telegram] Middleware ready for OpenClaw grammY integration");
+    console.log("[Telegram] Middleware ready for grammY integration");
   }
 
   stopListening(): void {
@@ -100,15 +99,46 @@ export class TelegramConnector extends SocialConnector {
     console.log("[Telegram] Real-time capture stopped");
   }
 
+  /** Send a message via Telegram Bot API */
   async sendMessage(threadId: string, text: string): Promise<string> {
-    // Delegates to OpenClaw's messaging tool
-    // openclaw message send --channel telegram --target <threadId> --message <text>
-    console.log(`[Telegram] Send to ${threadId}: ${text.slice(0, 50)}...`);
-    return `tg_sent_${Date.now()}`;
+    const url = `${TELEGRAM_API}/bot${this.botToken}/sendMessage`;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: threadId,
+        text,
+        parse_mode: "Markdown",
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`[Telegram] sendMessage failed: ${res.status} ${err}`);
+      throw new Error(`Telegram API error: ${res.status}`);
+    }
+
+    const data = (await res.json()) as { result: { message_id: number } };
+    const msgId = String(data.result.message_id);
+    console.log(`[Telegram] Sent message ${msgId} to ${threadId}`);
+    return msgId;
   }
 
+  /** Send typing indicator via Telegram Bot API */
   async sendTypingIndicator(threadId: string): Promise<void> {
-    console.log(`[Telegram] Typing indicator → ${threadId}`);
+    const url = `${TELEGRAM_API}/bot${this.botToken}/sendChatAction`;
+
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: threadId,
+        action: "typing",
+      }),
+    }).catch((err) => {
+      console.warn(`[Telegram] sendChatAction failed: ${err.message}`);
+    });
   }
 
   async getSelfId(): Promise<string> {
@@ -116,8 +146,8 @@ export class TelegramConnector extends SocialConnector {
   }
 
   async getThreadList(): Promise<Thread[]> {
-    // Would query Telegram API for chat list
-    // In practice, extracted from export data
+    // Telegram Bot API doesn't provide a chat list endpoint
+    // Chats are discovered when users message the bot
     return [];
   }
 
