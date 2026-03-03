@@ -286,11 +286,9 @@ uninstall_mirrorai() {
     [ -d "$MIRRORAI_HOME/sessions" ] && echo -e "  ${DIM}│   ├── sessions/ (Telegram session)${NC}"
     [ -f "$MIRRORAI_HOME/data/SOUL.md" ] && echo -e "  ${DIM}│   └── data/SOUL.md (persona)${NC}"
 
-    local cli_wrapper=""
-    for dir in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin" "$HOME/bin"; do
+    for dir in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin" "$HOME/bin" /usr/bin $(echo "$PATH" | tr ':' '\n'); do
         if [ -f "$dir/mirrorai" ]; then
-            cli_wrapper="$dir/mirrorai"
-            echo -e "  ${DIM}├── $cli_wrapper (CLI)${NC}"
+            echo -e "  ${DIM}├── $dir/mirrorai (CLI)${NC}"
         fi
     done
 
@@ -308,8 +306,13 @@ uninstall_mirrorai() {
     fi
 
     echo ""
-    # Remove ALL CLI wrappers from all possible PATH locations
-    for dir in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin" "$HOME/bin" /usr/bin; do
+    # Remove ALL CLI wrappers — check known dirs + scan entire PATH
+    local checked_dirs=""
+    for dir in /usr/local/bin /opt/homebrew/bin "$HOME/.local/bin" "$HOME/bin" /usr/bin $(echo "$PATH" | tr ':' '\n'); do
+        # Skip duplicates
+        echo "$checked_dirs" | grep -qx "$dir" 2>/dev/null && continue
+        checked_dirs="$checked_dirs
+$dir"
         if [ -f "$dir/mirrorai" ]; then
             echo -e "  ${DIM}├──${NC} Xóa CLI: $dir/mirrorai"
             rm -f "$dir/mirrorai" 2>/dev/null || sudo rm -f "$dir/mirrorai" 2>/dev/null || true
@@ -345,7 +348,8 @@ uninstall_mirrorai() {
 }
 
 # ── Detect if already installed ──────────────────────────────────────────
-if [ -d "$REPO_DIR/.git" ] && [ -f "$REPO_DIR/apps/cli/dist/index.js" ]; then
+# Detect: repo cloned (.git) OR dist built (dist/index.js) OR mirrorai command exists
+if [ -d "$REPO_DIR/.git" ] || [ -f "$REPO_DIR/apps/cli/dist/index.js" ] || command -v mirrorai &>/dev/null; then
 
     echo ""
     echo -e "${GREEN}${BOLD}  ✅ MirrorAI đã được cài đặt!${NC}"
@@ -400,9 +404,18 @@ if [ -d "$REPO_DIR/.git" ] && [ -f "$REPO_DIR/apps/cli/dist/index.js" ]; then
 
             # Restore backups
             mkdir -p "$MIRRORAI_HOME/sessions" "$MIRRORAI_HOME/data/exports"
-            [ -d /tmp/mirrorai_sessions_bak ] && cp -r /tmp/mirrorai_sessions_bak/* "$MIRRORAI_HOME/sessions/" 2>/dev/null; rm -rf /tmp/mirrorai_sessions_bak
-            [ -d /tmp/mirrorai_exports_bak ] && cp -r /tmp/mirrorai_exports_bak/* "$MIRRORAI_HOME/data/exports/" 2>/dev/null; rm -rf /tmp/mirrorai_exports_bak
-            [ -f /tmp/mirrorai_env_bak ] && cp /tmp/mirrorai_env_bak "$MIRRORAI_HOME/.env" 2>/dev/null; rm -f /tmp/mirrorai_env_bak
+            if [ -d /tmp/mirrorai_sessions_bak ]; then
+                cp -r /tmp/mirrorai_sessions_bak/* "$MIRRORAI_HOME/sessions/" 2>/dev/null || true
+                rm -rf /tmp/mirrorai_sessions_bak
+            fi
+            if [ -d /tmp/mirrorai_exports_bak ]; then
+                cp -r /tmp/mirrorai_exports_bak/* "$MIRRORAI_HOME/data/exports/" 2>/dev/null || true
+                rm -rf /tmp/mirrorai_exports_bak
+            fi
+            if [ -f /tmp/mirrorai_env_bak ]; then
+                cp /tmp/mirrorai_env_bak "$MIRRORAI_HOME/.env" 2>/dev/null || true
+                rm -f /tmp/mirrorai_env_bak
+            fi
 
             echo -e "  ${GREEN}✓ Session + export data giữ nguyên${NC}"
             echo ""
