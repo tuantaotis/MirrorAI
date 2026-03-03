@@ -329,62 +329,27 @@ async function autoExportTelegram(): Promise<boolean> {
   if (!sessionExists) console.log("  OTP code will be sent via Telegram app.\n");
 
   try {
-    const output = execSync(cmdParts.join(" "), {
+    // Use "inherit" for all stdio so user sees realtime progress
+    execSync(cmdParts.join(" "), {
       cwd: projectRoot,
-      stdio: ["inherit", "pipe", "inherit"],
+      stdio: "inherit",
       env: { ...process.env, ...env, PYTHONPATH: projectRoot },
       timeout: 600_000,
     });
 
-    const stdout = output.toString();
-    let success = false;
-    for (const line of stdout.split("\n")) {
-      if (line.startsWith("__EXPORT_STATS__")) {
-        try {
-          const stats = JSON.parse(line.replace("__EXPORT_STATS__", ""));
-          success = true;
-
-          // ── Detailed export summary ──
-          console.log("\n  ╔══════════════════════════════════════════════════╗");
-          console.log("  ║              📊 EXPORT RESULTS                    ║");
-          console.log("  ╠══════════════════════════════════════════════════╣");
-          console.log(`  ║  👤 Account:  ${(stats.self_name || "Unknown").padEnd(33)}║`);
-          console.log(`  ║  💬 Chats:    ${String(stats.chats_exported || 0).padEnd(33)}║`);
-          console.log(`  ║  📨 Messages: ${(stats.total_messages || 0).toLocaleString().padStart(10).padEnd(33)}║`);
-          console.log(`  ║  📁 Size:     ${(stats.file_size_mb || "?").toString().padEnd(30)} MB ║`);
-
-          if (stats.files && stats.files.length > 0) {
-            console.log("  ╠──────────────────────────────────────────────────╣");
-            console.log("  ║  📋 Chat details:                                 ║");
-            console.log("  ╠──────────────────────────────────────────────────╣");
-            const sorted = stats.files.sort((a: any, b: any) => (b.messages || 0) - (a.messages || 0));
-            const typeIcons: Record<string, string> = { personal_chat: "👤", private_group: "👥", private_supergroup: "🏢" };
-            for (const f of sorted.slice(0, 15)) {
-              const icon = typeIcons[f.type] || "💬";
-              const name = f.chat.length > 28 ? f.chat.slice(0, 28) + ".." : f.chat;
-              const count = (f.messages || 0).toLocaleString();
-              console.log(`  ║  ${icon} ${name.padEnd(30)} ${count.padStart(8)} msg  ║`);
-            }
-            if (sorted.length > 15) {
-              console.log(`  ║  ... and ${sorted.length - 15} more chats${" ".repeat(30)}║`);
-            }
-          }
-
-          console.log("  ╠══════════════════════════════════════════════════╣");
-          const outPath = (stats.combined_file || "").slice(-36);
-          console.log(`  ║  📂 Output: ${outPath.padEnd(37)}║`);
-          console.log("  ╚══════════════════════════════════════════════════╝");
-
-          saveEnvVars({
-            TELEGRAM_EXPORT_PATH: stats.combined_file || "",
-            TELEGRAM_SELF_NAME: stats.self_name || "",
-          });
-        } catch { /* ignore */ }
-      } else if (line.trim()) {
-        console.log(line);
-      }
+    // Read stats from file (Python exporter saves export_stats.json)
+    const statsFile = join(EXPORT_DIR, "export_stats.json");
+    if (existsSync(statsFile)) {
+      try {
+        const stats = JSON.parse(readFileSync(statsFile, "utf-8"));
+        saveEnvVars({
+          TELEGRAM_EXPORT_PATH: stats.combined_file || "",
+          TELEGRAM_SELF_NAME: stats.self_name || "",
+        });
+        return (stats.chats_exported || 0) > 0;
+      } catch { /* ignore */ }
     }
-    return success;
+    return false;
   } catch (err: any) {
     console.error(`  ✗ Export failed: ${err.message}`);
     console.error("  Run separately: mirrorai export");
