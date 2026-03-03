@@ -560,10 +560,10 @@ else
 
         if command -v colima &>/dev/null; then
             # Allocate minimal resources
-            local colima_mem=2
-            [ "$RAM_GB" -ge 16 ] && colima_mem=4
+            COLIMA_MEM=2
+            [ "$RAM_GB" -ge 16 ] && COLIMA_MEM=4
 
-            if run_with_status "Starting Colima VM (${colima_mem}GB RAM)..." colima start --cpu 2 --memory "$colima_mem" --arch "$ARCH" 2>/dev/null; then
+            if run_with_status "Starting Colima VM (${COLIMA_MEM}GB RAM)..." colima start --cpu 2 --memory "$COLIMA_MEM" --arch "$ARCH" 2>/dev/null; then
                 ok "Colima running (lightweight Docker runtime)"
                 DOCKER_AVAILABLE=true
                 CHROMADB_MODE="docker"
