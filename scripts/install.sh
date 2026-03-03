@@ -251,16 +251,69 @@ if ! command -v git &>/dev/null; then
     NEED_GIT=true
 fi
 
+# Helper: install brew package with retry + postinstall fix
+brew_install_safe() {
+    local pkg="$1"
+    local max_retries=2
+
+    for attempt in $(seq 1 $max_retries); do
+        if run_with_status "Installing $pkg via Homebrew (attempt $attempt/$max_retries)..." brew install "$pkg"; then
+            ok "$pkg installed"
+            return 0
+        fi
+
+        # Common fix: openssl postinstall fails on older macOS
+        if [ "$attempt" -lt "$max_retries" ]; then
+            warn "$pkg install failed — attempting recovery..."
+
+            # Fix openssl postinstall (common issue on macOS <14)
+            if brew list openssl@3 &>/dev/null 2>&1; then
+                run_with_status "Retrying openssl@3 postinstall..." brew postinstall openssl@3 || true
+            fi
+
+            # Update Xcode CLT linkage
+            if [ -d "/Library/Developer/CommandLineTools" ]; then
+                run_with_status "Resetting Xcode CLT path..." sudo xcode-select --reset 2>/dev/null || true
+            fi
+        fi
+    done
+
+    err "$pkg failed after $max_retries attempts"
+    return 1
+}
+
 # Install missing deps
 BREW_PACKAGES=""
+[ "$NEED_GIT" = true ] && BREW_PACKAGES="$BREW_PACKAGES git"
 [ "$NEED_NODE" = true ] && BREW_PACKAGES="$BREW_PACKAGES node@20"
 [ "$NEED_PYTHON" = true ] && BREW_PACKAGES="$BREW_PACKAGES python@3.12"
-[ "$NEED_GIT" = true ] && BREW_PACKAGES="$BREW_PACKAGES git"
 
 if [ -n "$BREW_PACKAGES" ]; then
+    # Pre-fix: ensure openssl@3 postinstall is clean before installing python
+    if [ "$NEED_PYTHON" = true ] && brew list openssl@3 &>/dev/null 2>&1; then
+        log "Pre-fixing openssl@3 postinstall..."
+        run_with_status "Running brew postinstall openssl@3..." brew postinstall openssl@3 || true
+    fi
+
     for pkg in $BREW_PACKAGES; do
-        run_with_status "Installing $pkg via Homebrew..." brew install "$pkg"
-        ok "$pkg installed"
+        brew_install_safe "$pkg" || {
+            # Fallback for Python: try python@3.11 or system python
+            if [[ "$pkg" == "python@3.12" ]]; then
+                warn "Trying python@3.11 as fallback..."
+                brew_install_safe "python@3.11" || {
+                    warn "Brew Python failed — checking if system python3 is usable..."
+                    if python3 --version 2>/dev/null | grep -qE "3\.[89]|3\.1[0-9]"; then
+                        ok "Using system Python: $(python3 --version 2>/dev/null)"
+                    else
+                        err "No usable Python found. Please install manually: brew install python@3.12"
+                        exit 1
+                    fi
+                }
+            else
+                err "Failed to install $pkg"
+                exit 1
+            fi
+        }
     done
     # Link node if needed
     if [ "$NEED_NODE" = true ]; then
