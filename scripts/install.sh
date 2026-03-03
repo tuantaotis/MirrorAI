@@ -663,30 +663,45 @@ step "Installing CLI..."
 
 cd "$REPO_DIR/apps/cli" 2>/dev/null || { warn "CLI directory not found"; }
 
-CLI_LINKED=false
-
-# Method 1: npm link (creates global symlink)
-if npm link >> "$LOG" 2>&1; then
-    CLI_LINKED=true
-    ok "CLI linked globally via npm"
+# Ensure dist exists (TypeScript must be compiled)
+if [ ! -f "$REPO_DIR/apps/cli/dist/index.js" ]; then
+    log "Building CLI..."
+    cd "$REPO_DIR/apps/cli"
+    npx tsc >> "$LOG" 2>&1 || npm run build >> "$LOG" 2>&1 || true
 fi
 
-# Method 2: Create shell wrapper in /usr/local/bin (fallback)
-if [ "$CLI_LINKED" = false ]; then
-    WRAPPER="/usr/local/bin/mirrorai"
-    cat > "$WRAPPER" 2>/dev/null << WRAPPEREOF || true
+CLI_LINKED=false
+
+# Detect Homebrew bin dir (already in PATH — no profile changes needed)
+BREW_BIN=""
+if [ -d "/opt/homebrew/bin" ]; then
+    BREW_BIN="/opt/homebrew/bin"  # Apple Silicon
+elif [ -d "/usr/local/bin" ]; then
+    BREW_BIN="/usr/local/bin"     # Intel Mac
+fi
+
+# Method 1: Create wrapper in Homebrew bin dir (instant, no PATH changes)
+if [ -n "$BREW_BIN" ] && [ -w "$BREW_BIN" ]; then
+    cat > "$BREW_BIN/mirrorai" << WRAPPEREOF
 #!/usr/bin/env bash
 exec node "$REPO_DIR/apps/cli/dist/index.js" "\$@"
 WRAPPEREOF
-    chmod +x "$WRAPPER" 2>/dev/null && {
-        CLI_LINKED=true
-        ok "CLI installed to /usr/local/bin/mirrorai"
-    } || true
+    chmod +x "$BREW_BIN/mirrorai"
+    CLI_LINKED=true
+    ok "CLI installed to $BREW_BIN/mirrorai"
 fi
 
-# Method 3: Add to PATH via shell profile (last resort)
+# Method 2: npm link (fallback)
 if [ "$CLI_LINKED" = false ]; then
-    # Create wrapper in ~/.mirrorai/bin/
+    cd "$REPO_DIR/apps/cli" 2>/dev/null
+    if npm link >> "$LOG" 2>&1; then
+        CLI_LINKED=true
+        ok "CLI linked globally via npm"
+    fi
+fi
+
+# Method 3: ~/.mirrorai/bin + add to shell profiles (last resort)
+if [ "$CLI_LINKED" = false ]; then
     mkdir -p "$MIRRORAI_HOME/bin"
     cat > "$MIRRORAI_HOME/bin/mirrorai" << WRAPPEREOF
 #!/usr/bin/env bash
@@ -694,7 +709,6 @@ exec node "$REPO_DIR/apps/cli/dist/index.js" "\$@"
 WRAPPEREOF
     chmod +x "$MIRRORAI_HOME/bin/mirrorai"
 
-    # Add to all common shell profiles
     for PROFILE in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do
         if [ -f "$PROFILE" ] || [ "$PROFILE" = "$HOME/.zprofile" ]; then
             if ! grep -q 'mirrorai/bin' "$PROFILE" 2>/dev/null; then
@@ -704,20 +718,17 @@ WRAPPEREOF
             fi
         fi
     done
-
-    # Also export for current session
     export PATH="$MIRRORAI_HOME/bin:$PATH"
-
     CLI_LINKED=true
     ok "CLI installed to $MIRRORAI_HOME/bin/mirrorai"
+    warn "Open a NEW terminal for 'mirrorai' command to work"
 fi
 
-# Verify CLI works
-if command -v mirrorai &>/dev/null || [ -x "$MIRRORAI_HOME/bin/mirrorai" ]; then
+# Verify
+if command -v mirrorai &>/dev/null; then
     ok "CLI ready — run 'mirrorai init' to get started"
 else
-    warn "CLI installed but may need: source ~/.zprofile"
-    info "Or run directly: node $REPO_DIR/apps/cli/dist/index.js init"
+    info "Run directly: node $REPO_DIR/apps/cli/dist/index.js init"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
