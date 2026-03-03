@@ -672,23 +672,40 @@ fi
 
 CLI_LINKED=false
 
-# Detect Homebrew bin dir (already in PATH — no profile changes needed)
-BREW_BIN=""
-if [ -d "/opt/homebrew/bin" ]; then
-    BREW_BIN="/opt/homebrew/bin"  # Apple Silicon
-elif [ -d "/usr/local/bin" ]; then
-    BREW_BIN="/usr/local/bin"     # Intel Mac
+# Detect a writable directory already in PATH
+INSTALL_BIN=""
+for candidate in \
+    "$(brew --prefix 2>/dev/null)/bin" \
+    "/opt/homebrew/bin" \
+    "/usr/local/bin" \
+    "$HOME/.local/bin" \
+    "$HOME/bin" \
+; do
+    if [ -n "$candidate" ] && [ -d "$candidate" ] && [ -w "$candidate" ] && echo "$PATH" | tr ':' '\n' | grep -qx "$candidate"; then
+        INSTALL_BIN="$candidate"
+        break
+    fi
+done
+
+# Fallback: writable dir in PATH even if not in candidate list
+if [ -z "$INSTALL_BIN" ]; then
+    for p in $(echo "$PATH" | tr ':' '\n'); do
+        if [ -d "$p" ] && [ -w "$p" ] && [[ "$p" != */sbin* ]]; then
+            INSTALL_BIN="$p"
+            break
+        fi
+    done
 fi
 
-# Method 1: Create wrapper in Homebrew bin dir (instant, no PATH changes)
-if [ -n "$BREW_BIN" ] && [ -w "$BREW_BIN" ]; then
-    cat > "$BREW_BIN/mirrorai" << WRAPPEREOF
+# Method 1: Create wrapper in detected PATH dir (instant, no profile changes)
+if [ -n "$INSTALL_BIN" ]; then
+    cat > "$INSTALL_BIN/mirrorai" << WRAPPEREOF
 #!/usr/bin/env bash
 exec node "$REPO_DIR/apps/cli/dist/index.js" "\$@"
 WRAPPEREOF
-    chmod +x "$BREW_BIN/mirrorai"
+    chmod +x "$INSTALL_BIN/mirrorai"
     CLI_LINKED=true
-    ok "CLI installed to $BREW_BIN/mirrorai"
+    ok "CLI installed to $INSTALL_BIN/mirrorai"
 fi
 
 # Method 2: npm link (fallback)
