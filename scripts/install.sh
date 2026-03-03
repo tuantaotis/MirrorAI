@@ -324,20 +324,13 @@ elif [ "$OS_MAJOR" -ge 14 ]; then
 elif [ "$OS_MAJOR" -ge 13 ]; then
     COMPAT_TIER=2
     CAN_COLIMA=true
+    CAN_OLLAMA=true
     CHROMADB_MODE="docker"
-    # Intel + macOS 13: Ollama officially needs 14+
-    if [ "$IS_APPLE_SILICON" = false ]; then
-        CAN_OLLAMA=false
-        USE_CLOUD_LLM=true
-    fi
 else
     # macOS 12
     COMPAT_TIER=3
+    CAN_OLLAMA=true
     CHROMADB_MODE="pip"
-    if [ "$IS_APPLE_SILICON" = false ]; then
-        CAN_OLLAMA=false
-        USE_CLOUD_LLM=true
-    fi
 fi
 
 # Auto-select model based on RAM (only if Ollama is available)
