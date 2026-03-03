@@ -334,15 +334,29 @@ else
 fi
 
 # Auto-select model based on RAM (only if Ollama is available)
+# ┌──────────┬──────────────────┬──────────┬───────────┐
+# │ RAM      │ Model            │ Download │ RAM Usage │
+# ├──────────┼──────────────────┼──────────┼───────────┤
+# │ 64GB+    │ qwen2.5:32b      │ ~20GB    │ ~22GB     │
+# │ 48GB     │ qwen2.5:14b      │ ~9GB     │ ~10GB     │
+# │ 24-32GB  │ qwen2.5:7b       │ ~4.7GB   │ ~5.5GB    │
+# │ 16GB     │ qwen2.5:3b       │ ~2GB     │ ~2.5GB    │
+# │ 8-12GB   │ qwen2.5:1.5b     │ ~1GB     │ ~1.5GB    │
+# │ ≤4GB     │ qwen2.5:0.5b     │ ~400MB   │ ~600MB    │
+# └──────────┴──────────────────┴──────────┴───────────┘
 if [ "$CAN_OLLAMA" = true ]; then
-    if [ "$RAM_GB" -ge 48 ]; then
+    if [ "$RAM_GB" -ge 64 ]; then
         SELECTED_MODEL="qwen2.5:32b"; MODEL_SIZE="~20GB"; QUALITY="Best — near cloud-quality"
-    elif [ "$RAM_GB" -ge 24 ]; then
+    elif [ "$RAM_GB" -ge 48 ]; then
         SELECTED_MODEL="qwen2.5:14b"; MODEL_SIZE="~9GB"; QUALITY="Great — recommended"
+    elif [ "$RAM_GB" -ge 24 ]; then
+        SELECTED_MODEL="qwen2.5:7b"; MODEL_SIZE="~4.7GB"; QUALITY="Great — smooth"
     elif [ "$RAM_GB" -ge 16 ]; then
-        SELECTED_MODEL="qwen2.5:7b"; MODEL_SIZE="~4.7GB"; QUALITY="Good — casual chat"
+        SELECTED_MODEL="qwen2.5:3b"; MODEL_SIZE="~2GB"; QUALITY="Good — casual chat"
+    elif [ "$RAM_GB" -ge 8 ]; then
+        SELECTED_MODEL="qwen2.5:1.5b"; MODEL_SIZE="~1GB"; QUALITY="Good — lightweight, Vietnamese OK"
     else
-        SELECTED_MODEL="qwen2.5:3b"; MODEL_SIZE="~2GB"; QUALITY="Basic — lightweight"
+        SELECTED_MODEL="qwen2.5:0.5b"; MODEL_SIZE="~400MB"; QUALITY="Basic — ultra-light"
     fi
 else
     SELECTED_MODEL="gemini/gemini-2.5-flash"
