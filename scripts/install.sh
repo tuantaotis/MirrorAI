@@ -326,41 +326,66 @@ ok "Python $(python3 --version 2>/dev/null | awk '{print $2}' || echo '—')"
 ok "Git $(git --version 2>/dev/null | awk '{print $3}' || echo '—')"
 
 # ══════════════════════════════════════════════════════════════════════════
-#  STEP 4: Docker
+#  STEP 4: Docker (or Colima fallback, or pip ChromaDB)
 # ══════════════════════════════════════════════════════════════════════════
-step "Setting up Docker..."
+step "Setting up container runtime..."
+
+DOCKER_AVAILABLE=false
+CHROMADB_MODE="none"  # docker | pip | none
 
 if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     ok "Docker already running ($(docker --version | awk '{print $3}' | tr -d ','))"
+    DOCKER_AVAILABLE=true
+    CHROMADB_MODE="docker"
 else
+    # Try Docker Desktop first
     if ! command -v docker &>/dev/null; then
-        run_with_status "Installing Docker Desktop..." brew install --cask docker
+        log "Attempting Docker Desktop..."
+        if run_with_status "Installing Docker Desktop..." brew install --cask docker 2>/dev/null; then
+            ok "Docker Desktop installed"
+        else
+            warn "Docker Desktop not compatible with this macOS version"
+        fi
     fi
 
-    # Auto-start Docker Desktop
-    log "Starting Docker Desktop..."
-    open -a Docker 2>/dev/null || open /Applications/Docker.app 2>/dev/null || true
-
-    # Wait for Docker to be ready (max 60s)
-    DOCKER_WAIT=0
-    DOCKER_MAX=60
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local fi=0
-    while ! docker info &>/dev/null 2>&1; do
-        if [ $DOCKER_WAIT -ge $DOCKER_MAX ]; then
-            printf "\r\033[K"
-            warn "Docker not ready after ${DOCKER_MAX}s — will retry ChromaDB later"
-            break
-        fi
-        printf "\r  ${CYAN}${frames[$fi]}${NC} Waiting for Docker to start... ${DIM}(%ds/%ds)${NC}\033[K" "$DOCKER_WAIT" "$DOCKER_MAX"
-        fi=$(( (fi + 1) % ${#frames[@]} ))
-        sleep 2
-        DOCKER_WAIT=$((DOCKER_WAIT + 2))
-    done
-    printf "\r\033[K"
+    # If Docker installed, try starting it
+    if command -v docker &>/dev/null; then
+        open -a Docker 2>/dev/null || open /Applications/Docker.app 2>/dev/null || true
+        DOCKER_WAIT=0
+        while ! docker info &>/dev/null 2>&1; do
+            [ $DOCKER_WAIT -ge 30 ] && break
+            printf "\r  ${CYAN}⏳${NC} Waiting for Docker... ${DIM}(%ds/30s)${NC}\033[K" "$DOCKER_WAIT"
+            sleep 2
+            DOCKER_WAIT=$((DOCKER_WAIT + 2))
+        done
+        printf "\r\033[K"
+    fi
 
     if docker info &>/dev/null 2>&1; then
-        ok "Docker Desktop running"
+        ok "Docker running"
+        DOCKER_AVAILABLE=true
+        CHROMADB_MODE="docker"
+    else
+        # Fallback 1: Colima (lightweight Docker runtime, works on macOS 12+)
+        log "Docker Desktop unavailable — trying Colima..."
+        if command -v colima &>/dev/null || run_with_status "Installing Colima..." brew install colima docker 2>/dev/null; then
+            run_with_status "Starting Colima VM..." colima start --cpu 2 --memory 2 2>/dev/null && {
+                ok "Colima running (lightweight Docker runtime)"
+                DOCKER_AVAILABLE=true
+                CHROMADB_MODE="docker"
+            } || {
+                warn "Colima failed to start"
+            }
+        else
+            warn "Colima install failed"
+        fi
+    fi
+
+    # Fallback 2: ChromaDB via pip (no Docker needed)
+    if [ "$DOCKER_AVAILABLE" = false ]; then
+        log "No container runtime available — will run ChromaDB directly via pip"
+        CHROMADB_MODE="pip"
+        ok "ChromaDB will run as Python process (no Docker needed)"
     fi
 fi
 
@@ -480,8 +505,8 @@ step "Starting ChromaDB..."
 
 if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
     ok "ChromaDB already running on :$CHROMADB_PORT"
-elif docker info &>/dev/null 2>&1; then
-    # Remove old container if exists but stopped
+elif [ "$CHROMADB_MODE" = "docker" ] && docker info &>/dev/null 2>&1; then
+    # Docker mode
     docker rm -f chromadb >> "$LOG" 2>&1 || true
 
     log "Starting ChromaDB container..."
@@ -492,11 +517,46 @@ elif docker info &>/dev/null 2>&1; then
         -v "$MIRRORAI_HOME/data/chromadb:/chroma/chroma" \
         chromadb/chroma:latest >> "$LOG" 2>&1
 
+    CHROMA_WAIT=0
+    while ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; do
+        [ $CHROMA_WAIT -ge 30 ] && break
+        sleep 1
+        CHROMA_WAIT=$((CHROMA_WAIT + 1))
+    done
+
+    if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
+        ok "ChromaDB running on :$CHROMADB_PORT (Docker)"
+    else
+        warn "ChromaDB container not ready — check: docker logs chromadb"
+    fi
+else
+    # Pip mode: run ChromaDB as background Python process
+    log "Starting ChromaDB via pip (no Docker)..."
+
+    # Ensure chromadb is installed in venv
+    if [ -f "$REPO_DIR/.venv/bin/activate" ]; then
+        source "$REPO_DIR/.venv/bin/activate"
+    fi
+    pip install chromadb >> "$LOG" 2>&1 || true
+
+    # Create data dir
+    mkdir -p "$MIRRORAI_HOME/data/chromadb"
+
+    # Start ChromaDB server in background
+    CHROMA_LOG="$MIRRORAI_HOME/logs/chromadb.log"
+    nohup chroma run \
+        --path "$MIRRORAI_HOME/data/chromadb" \
+        --port $CHROMADB_PORT \
+        --host 0.0.0.0 \
+        > "$CHROMA_LOG" 2>&1 &
+    CHROMA_PID=$!
+    echo "$CHROMA_PID" > "$MIRRORAI_HOME/chromadb.pid"
+
     # Wait for ready
     CHROMA_WAIT=0
     while ! curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; do
-        if [ $CHROMA_WAIT -ge 30 ]; then
-            warn "ChromaDB not ready after 30s — check: docker logs chromadb"
+        if [ $CHROMA_WAIT -ge 15 ]; then
+            warn "ChromaDB not ready — check log: $CHROMA_LOG"
             break
         fi
         sleep 1
@@ -504,10 +564,44 @@ elif docker info &>/dev/null 2>&1; then
     done
 
     if curl -sf http://localhost:$CHROMADB_PORT/api/v1/heartbeat &>/dev/null; then
-        ok "ChromaDB running on :$CHROMADB_PORT (data persisted to ~/.mirrorai/data/chromadb)"
+        ok "ChromaDB running on :$CHROMADB_PORT (pip mode, PID: $CHROMA_PID)"
+
+        # Create launchd plist for auto-start on login
+        PLIST_DIR="$HOME/Library/LaunchAgents"
+        PLIST_FILE="$PLIST_DIR/com.mirrorai.chromadb.plist"
+        mkdir -p "$PLIST_DIR"
+        cat > "$PLIST_FILE" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mirrorai.chromadb</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$REPO_DIR/.venv/bin/chroma</string>
+        <string>run</string>
+        <string>--path</string>
+        <string>$MIRRORAI_HOME/data/chromadb</string>
+        <string>--port</string>
+        <string>$CHROMADB_PORT</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
+    <key>StandardErrorPath</key>
+    <string>$MIRRORAI_HOME/logs/chromadb.log</string>
+</dict>
+</plist>
+PLISTEOF
+        launchctl load "$PLIST_FILE" 2>/dev/null || true
+        ok "ChromaDB auto-start configured (launchd)"
     fi
-else
-    warn "Docker not available — start Docker Desktop then run: docker run -d --name chromadb -p 8000:8000 chromadb/chroma:latest"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
