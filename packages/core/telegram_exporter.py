@@ -4,7 +4,7 @@ MirrorAI — Telegram Auto Exporter
 Tự động export chat history từ Telegram qua MTProto API (Telethon).
 100% local, không gửi data đi đâu.
 
-User chỉ cần: số điện thoại + OTP. Không cần API credentials.
+User chỉ cần: số điện thoại + OTP.
 
 Usage:
     python -m packages.core.telegram_exporter \
@@ -30,9 +30,85 @@ logging.basicConfig(
 logger = logging.getLogger("mirrorai.exporter")
 
 # Built-in API credentials (standard practice for open-source Telegram clients)
-# Telethon default test credentials — works for all users
 DEFAULT_API_ID = 611335
 DEFAULT_API_HASH = "d524b414d21f4d37f08684c1df41ac9c"
+
+# ── Pretty Print Helpers ──
+
+def print_header():
+    print("\n╔═══════════════════════════════════════════════════╗")
+    print("║       🪞 MirrorAI — Telegram Auto Exporter        ║")
+    print("║       100% Local • Dữ liệu không rời máy bạn      ║")
+    print("╚═══════════════════════════════════════════════════╝\n")
+
+
+def print_step(step: int, total: int, text: str):
+    bar_width = 30
+    filled = int(bar_width * step / total)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    pct = int(100 * step / total)
+    print(f"\n  {bar}  {pct}%  {text}")
+
+
+def print_status(icon: str, text: str, indent: int = 2):
+    print(f"{'  ' * indent}{icon} {text}")
+
+
+def print_chat_progress(index: int, total: int, name: str, chat_type: str, msg_count: int, elapsed: float):
+    """Hiển thị progress cho từng chat đang export."""
+    type_icon = {"personal_chat": "👤", "private_group": "👥", "private_supergroup": "🏢"}.get(chat_type, "💬")
+    bar_width = 20
+    filled = int(bar_width * index / total)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    # Truncate name nếu quá dài
+    display_name = name[:25] + "..." if len(name) > 25 else name
+    print(f"  {bar} [{index}/{total}] {type_icon} {display_name} — {msg_count:,} tin nhắn ({elapsed:.1f}s)")
+
+
+def print_summary_table(stats: dict, duration: float):
+    """Bảng tổng kết chi tiết."""
+    print(f"\n  ╔══════════════════════════════════════════════════╗")
+    print(f"  ║              📊 KẾT QUẢ EXPORT                    ║")
+    print(f"  ╠══════════════════════════════════════════════════╣")
+    print(f"  ║  👤 Tài khoản:  {stats['self_name']:<33}║")
+    print(f"  ║  💬 Chats:      {stats['chats_exported']:<33}║")
+    print(f"  ║  📨 Tin nhắn:   {stats['total_messages']:>10,}{'':<22}║")
+    print(f"  ║  ⏱  Thời gian:  {duration:.1f}s{'':<29}║")
+    print(f"  ║  📁 Dung lượng: {stats.get('file_size_mb', '?')} MB{'':<27}║")
+    print(f"  ╠══════════════════════════════════════════════════╣")
+
+    if stats.get("files"):
+        print(f"  ║  📋 Chi tiết từng chat:                          ║")
+        print(f"  ╠──────────────────────────────────────────────────╣")
+        # Top 10 chats by message count
+        sorted_files = sorted(stats["files"], key=lambda x: x["messages"], reverse=True)
+        for i, f in enumerate(sorted_files[:15]):
+            type_icon = {"personal_chat": "👤", "private_group": "👥", "private_supergroup": "🏢"}.get(f["type"], "💬")
+            name = f["chat"][:28] + ".." if len(f["chat"]) > 28 else f["chat"]
+            count = f"{f['messages']:,}"
+            print(f"  ║  {type_icon} {name:<30} {count:>8} msg  ║")
+        if len(sorted_files) > 15:
+            print(f"  ║  ... và {len(sorted_files) - 15} chats khác{'':<30}║")
+
+    print(f"  ╠══════════════════════════════════════════════════╣")
+    print(f"  ║  📂 Output: {str(stats.get('combined_file', ''))[:36]:<37}║")
+    print(f"  ║  📄 Log:    ~/.mirrorai/logs/exporter.log        ║")
+
+    if stats.get("errors"):
+        print(f"  ║  ⚠  Lỗi:    {len(stats['errors'])} chats bị lỗi{'':<27}║")
+
+    print(f"  ╠══════════════════════════════════════════════════╣")
+    print(f"  ║  ▶ Tiếp theo: mirrorai ingest                    ║")
+    print(f"  ╚══════════════════════════════════════════════════╝\n")
+
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f}"
 
 
 async def export_telegram_chats(
@@ -47,18 +123,6 @@ async def export_telegram_chats(
     """
     Export Telegram chat history to local JSON files.
     User chỉ cần số điện thoại — OTP sẽ được gửi qua Telegram.
-
-    Args:
-        phone: Số điện thoại (+84...)
-        output_dir: Thư mục lưu export
-        limit: Số tin nhắn tối đa mỗi chat
-        chat_filter: "all" | "private" | "group"
-        session_dir: Thư mục lưu session file
-        api_id: Telegram API ID (có mặc định)
-        api_hash: Telegram API Hash (có mặc định)
-
-    Returns:
-        dict với stats về export
     """
     try:
         from telethon import TelegramClient
@@ -74,6 +138,8 @@ async def export_telegram_chats(
         logger.error("Telethon chưa cài. Chạy: pip install telethon")
         sys.exit(1)
 
+    total_start = time.time()
+
     # Setup paths
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -88,13 +154,7 @@ async def export_telegram_chats(
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(file_handler)
 
-    logger.info("=" * 50)
-    logger.info("MirrorAI Telegram Exporter")
-    logger.info(f"  Phone: {phone[:4]}***{phone[-3:]}")
-    logger.info(f"  Output: {output_path}")
-    logger.info(f"  Limit: {limit} messages/chat")
-    logger.info(f"  Filter: {chat_filter}")
-    logger.info("=" * 50)
+    print_header()
 
     stats = {
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -106,62 +166,104 @@ async def export_telegram_chats(
         "errors": [],
     }
 
-    # Connect — Telethon sẽ tự hỏi OTP qua terminal
+    # ── Step 1: Connect ──
+    print_step(1, 5, "Kết nối Telegram...")
+    masked_phone = phone[:4] + "***" + phone[-3:]
+    print_status("📱", f"Số điện thoại: {masked_phone}")
+    print_status("🔐", "Session: " + ("đã lưu (không cần OTP)" if session_path.with_suffix(".session").exists() else "mới (sẽ gửi OTP)"))
+
+    logger.info(f"Connecting: {masked_phone}")
+
     client = TelegramClient(str(session_path), api_id, api_hash)
 
-    print("\n  Đang kết nối Telegram...")
-    print("  (Mã OTP sẽ được gửi qua Telegram app của bạn)\n")
+    if not session_path.with_suffix(".session").exists():
+        print_status("📩", "Mã OTP sẽ gửi qua Telegram app...")
+        print()
 
     await client.start(phone=phone)
 
     me = await client.get_me()
     self_name = f"{me.first_name or ''} {me.last_name or ''}".strip()
     self_id = str(me.id)
+    username = me.username or "N/A"
     stats["self_name"] = self_name
     stats["self_id"] = self_id
 
-    logger.info(f"  ✓ Logged in: {self_name} (ID: {self_id})")
-    print(f"  ✓ Đăng nhập thành công: {self_name}")
+    print_status("✅", f"Đăng nhập thành công!")
+    print_status("👤", f"Tên: {self_name}")
+    print_status("🆔", f"ID: {self_id}")
+    print_status("📛", f"Username: @{username}")
+    logger.info(f"Logged in: {self_name} (@{username}, ID: {self_id})")
 
-    # Get dialogs (chats)
-    print("  Đang tải danh sách chat...")
+    # ── Step 2: Scan chats ──
+    print_step(2, 5, "Quét danh sách chat...")
+
     dialogs = await client.get_dialogs()
-    logger.info(f"  Found {len(dialogs)} chats")
-    print(f"  ✓ Tìm thấy {len(dialogs)} cuộc hội thoại\n")
+
+    # Categorize dialogs
+    private_chats = 0
+    groups = 0
+    channels = 0
+    bots = 0
+    exportable = []
 
     for dialog in dialogs:
         entity = dialog.entity
-
-        # Filter chats
         is_user = isinstance(entity, User)
-        is_group = isinstance(entity, (Chat, Channel))
 
+        if is_user:
+            if getattr(entity, "bot", False):
+                bots += 1
+                continue
+            if getattr(entity, "deleted", False):
+                continue
+            private_chats += 1
+        elif isinstance(entity, Channel):
+            if getattr(entity, "broadcast", False):
+                channels += 1
+                continue
+            groups += 1
+        elif isinstance(entity, (Chat,)):
+            groups += 1
+        else:
+            continue
+
+        # Apply filter
         if chat_filter == "private" and not is_user:
             continue
-        if chat_filter == "group" and not is_group:
+        if chat_filter == "group" and is_user:
             continue
 
-        # Skip bots, deleted accounts
-        if is_user and (getattr(entity, "bot", False) or getattr(entity, "deleted", False)):
-            continue
+        exportable.append(dialog)
+
+    print_status("📊", f"Tổng: {len(dialogs)} mục")
+    print_status("👤", f"Chat cá nhân: {private_chats}")
+    print_status("👥", f"Nhóm: {groups}")
+    print_status("📢", f"Kênh: {channels} (bỏ qua)")
+    print_status("🤖", f"Bot: {bots} (bỏ qua)")
+    print_status("📥", f"Sẽ export: {len(exportable)} chats (filter: {chat_filter})")
+
+    logger.info(f"Dialogs: {len(dialogs)} total, {len(exportable)} exportable")
+
+    # ── Step 3: Export messages ──
+    print_step(3, 5, f"Đang export {len(exportable)} chats...")
+    print()
+
+    for idx, dialog in enumerate(exportable, 1):
+        entity = dialog.entity
+        is_user = isinstance(entity, User)
 
         chat_name = dialog.name or "Unknown"
         chat_id = str(dialog.id)
 
-        # Determine chat type
         if is_user:
             chat_type = "personal_chat"
         elif isinstance(entity, Channel):
-            chat_type = "public_supergroup" if getattr(entity, "broadcast", False) else "private_supergroup"
+            chat_type = "private_supergroup"
         else:
             chat_type = "private_group"
 
-        # Skip channels/broadcasts
-        if getattr(entity, "broadcast", False):
-            continue
-
-        print(f"  [{stats['chats_exported'] + 1}] {chat_name}...", end="", flush=True)
-
+        chat_start = time.time()
         messages_data = []
         msg_count = 0
 
@@ -184,7 +286,6 @@ async def export_telegram_chats(
                     "forwarded_from": None,
                 }
 
-                # Sender info
                 if message.sender:
                     if isinstance(message.sender, User):
                         sender_name = f"{message.sender.first_name or ''} {message.sender.last_name or ''}".strip()
@@ -194,7 +295,6 @@ async def export_telegram_chats(
                         msg_obj["from"] = getattr(message.sender, "title", "Unknown")
                         msg_obj["from_id"] = f"channel{message.sender.id}"
 
-                # Text content
                 if message.text:
                     msg_obj["text"] = message.text
                 elif message.media:
@@ -205,7 +305,6 @@ async def export_telegram_chats(
                     else:
                         msg_obj["text"] = "[Media]"
 
-                # Forwarded
                 if message.forward:
                     fwd_name = ""
                     if message.forward.sender:
@@ -217,19 +316,21 @@ async def export_telegram_chats(
 
         except Exception as e:
             err_msg = f"Error exporting {chat_name}: {e}"
-            logger.warning(f"  ✗ {err_msg}")
+            logger.warning(err_msg)
             stats["errors"].append(err_msg)
-            print(f" ✗ lỗi")
+            print_chat_progress(idx, len(exportable), chat_name, chat_type, 0, time.time() - chat_start)
+            print_status("⚠", f"Lỗi: {str(e)[:60]}", indent=3)
             continue
 
+        chat_elapsed = time.time() - chat_start
+
         if msg_count == 0:
-            print(f" (trống)")
+            print_chat_progress(idx, len(exportable), chat_name, chat_type, 0, chat_elapsed)
             continue
 
         # Reverse to chronological order
         messages_data.reverse()
 
-        # Build export object (Telegram Desktop compatible format)
         export_obj = {
             "name": chat_name,
             "type": chat_type,
@@ -237,7 +338,6 @@ async def export_telegram_chats(
             "messages": messages_data,
         }
 
-        # Save to file
         safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in chat_name).strip()
         file_name = f"{safe_name}_{chat_id}.json"
         file_path = output_path / file_name
@@ -245,7 +345,7 @@ async def export_telegram_chats(
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(export_obj, f, indent=2, ensure_ascii=False)
 
-        print(f" ✓ {msg_count} tin nhắn")
+        print_chat_progress(idx, len(exportable), chat_name, chat_type, msg_count, chat_elapsed)
 
         stats["chats_exported"] += 1
         stats["total_messages"] += msg_count
@@ -256,7 +356,11 @@ async def export_telegram_chats(
             "file": str(file_path),
         })
 
-    # Create combined result.json
+        logger.info(f"Exported: {chat_name} ({chat_type}) — {msg_count} messages in {chat_elapsed:.1f}s")
+
+    # ── Step 4: Merge files ──
+    print_step(4, 5, "Gộp dữ liệu...")
+
     all_messages = []
     for file_info in stats["files"]:
         with open(file_info["file"], "r", encoding="utf-8") as f:
@@ -278,25 +382,35 @@ async def export_telegram_chats(
     with open(combined_path, "w", encoding="utf-8") as f:
         json.dump(combined_obj, f, indent=2, ensure_ascii=False)
 
+    # File size
+    file_size = combined_path.stat().st_size
+    stats["file_size_mb"] = format_size(file_size)
     stats["combined_file"] = str(combined_path)
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    # Save stats
+    print_status("✅", f"Gộp {stats['total_messages']:,} tin nhắn → result.json ({stats['file_size_mb']} MB)")
+
+    # ── Step 5: Save & Cleanup ──
+    print_step(5, 5, "Lưu kết quả...")
+
     stats_path = output_path / "export_stats.json"
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
 
-    await client.disconnect()
+    print_status("💾", f"Stats: {stats_path}")
+    print_status("📄", f"Log: {log_file}")
 
-    print(f"\n{'='*50}")
-    print(f"  ✓ Export hoàn tất!")
-    print(f"    Chats: {stats['chats_exported']}")
-    print(f"    Tin nhắn: {stats['total_messages']}")
-    print(f"    File: {combined_path}")
-    print(f"{'='*50}")
+    await client.disconnect()
+    print_status("🔌", "Đã ngắt kết nối Telegram")
+
+    total_duration = time.time() - total_start
+    logger.info(f"Export complete: {stats['chats_exported']} chats, {stats['total_messages']} messages in {total_duration:.1f}s")
+
+    # ── Summary ──
+    print_summary_table(stats, total_duration)
 
     # Output for CLI to parse
-    print(f"\n__EXPORT_STATS__{json.dumps(stats)}")
+    print(f"__EXPORT_STATS__{json.dumps(stats)}")
 
     return stats
 
@@ -308,7 +422,6 @@ def main():
     parser.add_argument("--limit", default=5000, type=int, help="Max messages per chat")
     parser.add_argument("--filter", default="all", choices=["all", "private", "group"], help="Chat type filter")
     parser.add_argument("--session-dir", default="", help="Session file directory")
-    # Optional override (user không cần quan tâm)
     parser.add_argument("--api-id", type=int, default=DEFAULT_API_ID, help=argparse.SUPPRESS)
     parser.add_argument("--api-hash", default=DEFAULT_API_HASH, help=argparse.SUPPRESS)
 
