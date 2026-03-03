@@ -667,7 +667,10 @@ cd "$REPO_DIR/apps/cli" 2>/dev/null || { warn "CLI directory not found"; }
 if [ ! -f "$REPO_DIR/apps/cli/dist/index.js" ]; then
     log "Building CLI..."
     cd "$REPO_DIR/apps/cli"
-    npx tsc >> "$LOG" 2>&1 || npm run build >> "$LOG" 2>&1 || true
+    npm install >> "$LOG" 2>&1
+    npx tsc >> "$LOG" 2>&1 || npm run build >> "$LOG" 2>&1 || {
+        warn "TypeScript build failed — check $LOG"
+    }
 fi
 
 CLI_LINKED=false
