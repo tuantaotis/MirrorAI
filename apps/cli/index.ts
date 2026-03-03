@@ -11,6 +11,7 @@ import { statusCommand } from "./commands/status.js";
 import { mirrorCommand } from "./commands/mirror.js";
 import { setupCommand } from "./commands/setup.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { exportCommand } from "./commands/export.js";
 
 const program = new Command();
 
@@ -25,5 +26,6 @@ program.addCommand(statusCommand);
 program.addCommand(mirrorCommand);
 program.addCommand(setupCommand);
 program.addCommand(doctorCommand);
+program.addCommand(exportCommand);
 
 program.parse();

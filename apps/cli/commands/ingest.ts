@@ -94,16 +94,22 @@ export const ingestCommand = new Command("ingest")
           || envVars.TELEGRAM_EXPORT_PATH
           || process.env.TELEGRAM_EXPORT_PATH;
 
-        if (!exportPath || !existsSync(exportPath)) {
-          console.error(
-            "✗ No export file found. Export from Telegram Desktop:\n" +
-              "  Settings → Advanced → Export Telegram Data → JSON format\n" +
-              "  Then: mirrorai ingest --platform=telegram --file=<path>"
-          );
+        // Check for auto-exported file
+        const autoExportFile = join(MIRRORAI_HOME, "data", "exports", "result.json");
+        const finalExportPath = exportPath
+          || (existsSync(autoExportFile) ? autoExportFile : null);
+
+        if (!finalExportPath || !existsSync(finalExportPath)) {
+          console.log("  No export file found.\n");
+          console.log("  Option 1 (auto): mirrorai export");
+          console.log("    → Tự động tải chat history từ Telegram (cần API credentials)\n");
+          console.log("  Option 2 (manual): Export từ Telegram Desktop:");
+          console.log("    → Settings → Advanced → Export Telegram Data → JSON");
+          console.log("    → mirrorai ingest --platform=telegram --file=<path>\n");
           continue;
         }
 
-        console.log(`Export file: ${exportPath}`);
+        console.log(`Export file: ${finalExportPath}`);
 
         // Determine self ID from .env or state
         const selfId = envVars.TELEGRAM_SELF_NAME
@@ -118,7 +124,7 @@ export const ingestCommand = new Command("ingest")
         // Run Python pipeline orchestrator
         const cmd = [
           "python3", "-m", "packages.core.run_pipeline",
-          "--export-path", `"${resolve(exportPath)}"`,
+          "--export-path", `"${resolve(finalExportPath)}"`,
           "--self-id", `"${selfId}"`,
           "--data-dir", `"${MIRRORAI_HOME}"`,
           "--platform", platform,
