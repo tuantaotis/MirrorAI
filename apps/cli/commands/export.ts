@@ -1,6 +1,7 @@
 /**
  * MirrorAI CLI — `mirrorai export`
- * Auto-export Telegram chat history. User chỉ cần số điện thoại + OTP.
+ * Auto-export Telegram chat history. User chỉ cần số điện thoại + OTP lần đầu.
+ * Lần sau tự động dùng session đã lưu — không cần đăng nhập lại.
  * 100% local — data không rời khỏi máy.
  */
 
@@ -14,6 +15,8 @@ import { fileURLToPath } from "node:url";
 const MIRRORAI_HOME = join(homedir(), ".mirrorai");
 const STATE_FILE = join(MIRRORAI_HOME, "state.json");
 const EXPORT_DIR = join(MIRRORAI_HOME, "data", "exports");
+const SESSION_DIR = join(MIRRORAI_HOME, "sessions");
+const SESSION_FILE = join(SESSION_DIR, "mirrorai_session.session");
 
 function findProjectRoot(): string {
   const cliDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -42,23 +45,54 @@ function loadEnv(): Record<string, string> {
   return vars;
 }
 
+function hasSession(): boolean {
+  return existsSync(SESSION_FILE);
+}
+
 export const exportCommand = new Command("export")
-  .description("Auto-export Telegram chat history (chỉ cần SĐT + OTP)")
+  .description("Auto-export Telegram chat history (đăng nhập 1 lần, tự nhớ)")
   .option("--phone <phone>", "Số điện thoại Telegram (+84...)")
   .option("--limit <number>", "Max messages per chat", "5000")
   .option("--filter <type>", "Chat filter: all | private | group", "all")
   .option("--auto-ingest", "Tự động chạy ingest sau khi export")
+  .option("--logout", "Xóa session đăng nhập")
   .action(async (options) => {
     console.log("\n╔════════════════════════════════════════╗");
     console.log("║  MirrorAI — Auto Export (100% Local)   ║");
     console.log("╚════════════════════════════════════════╝\n");
 
+    // Handle logout
+    if (options.logout) {
+      if (hasSession()) {
+        const { unlinkSync } = await import("node:fs");
+        unlinkSync(SESSION_FILE);
+        console.log("  ✓ Đã xóa session. Lần sau sẽ đăng nhập lại.\n");
+      } else {
+        console.log("  Không có session nào.\n");
+      }
+      return;
+    }
+
     const env = loadEnv();
 
-    // Get phone number
-    let phone = options.phone || env.TELEGRAM_PHONE || process.env.TELEGRAM_PHONE;
+    // Ensure dirs
+    mkdirSync(EXPORT_DIR, { recursive: true });
+    mkdirSync(SESSION_DIR, { recursive: true });
 
-    if (!phone) {
+    // Check if session exists → skip phone prompt
+    let phone = options.phone || env.TELEGRAM_PHONE || process.env.TELEGRAM_PHONE;
+    const sessionExists = hasSession();
+
+    if (sessionExists) {
+      console.log("  ✓ Đã đăng nhập trước đó — bỏ qua đăng nhập");
+      console.log(`  ℹ Session: ${SESSION_FILE}`);
+      if (env.TELEGRAM_SELF_NAME) {
+        console.log(`  👤 Tài khoản: ${env.TELEGRAM_SELF_NAME}`);
+      }
+      console.log(`  ℹ Dùng --logout để đăng nhập tài khoản khác\n`);
+    } else if (!phone) {
+      // First time — need phone
+      console.log("  Lần đầu sử dụng — cần đăng nhập Telegram\n");
       try {
         const inquirer = await import("inquirer");
         const answers = await inquirer.default.prompt([
@@ -66,12 +100,12 @@ export const exportCommand = new Command("export")
             type: "input",
             name: "phone",
             message: "Số điện thoại Telegram (VD: +84901234567):",
-            validate: (v: string) => v.startsWith("+") && v.length >= 10 || "Nhập đúng format: +84...",
+            validate: (v: string) => (v.startsWith("+") && v.length >= 10) || "Nhập đúng format: +84...",
           },
         ]);
         phone = answers.phone;
 
-        // Save for next time
+        // Save for reference
         const envFile = join(MIRRORAI_HOME, ".env");
         let content = existsSync(envFile) ? readFileSync(envFile, "utf-8") : "";
         if (!content.includes("TELEGRAM_PHONE=")) {
@@ -83,10 +117,6 @@ export const exportCommand = new Command("export")
         process.exit(1);
       }
     }
-
-    // Ensure dirs
-    mkdirSync(EXPORT_DIR, { recursive: true });
-    mkdirSync(join(MIRRORAI_HOME, "sessions"), { recursive: true });
 
     // Ensure telethon installed
     try {
@@ -103,17 +133,24 @@ export const exportCommand = new Command("export")
 
     const projectRoot = findProjectRoot();
 
-    const cmd = [
+    // Build command — phone optional if session exists
+    const cmdParts = [
       "python3", "-m", "packages.core.telegram_exporter",
-      "--phone", `"${phone}"`,
       "--output", `"${EXPORT_DIR}"`,
       "--limit", options.limit,
       "--filter", options.filter,
-      "--session-dir", `"${join(MIRRORAI_HOME, "sessions")}"`,
-    ].join(" ");
+      "--session-dir", `"${SESSION_DIR}"`,
+    ];
 
-    console.log("  Kết nối Telegram...");
-    console.log("  Mã OTP sẽ gửi qua app Telegram của bạn.\n");
+    if (phone) {
+      cmdParts.push("--phone", `"${phone}"`);
+    }
+
+    const cmd = cmdParts.join(" ");
+
+    if (!sessionExists) {
+      console.log("  Mã OTP sẽ gửi qua app Telegram.\n");
+    }
 
     try {
       const output = execSync(cmd, {
@@ -137,7 +174,7 @@ export const exportCommand = new Command("export")
       }
 
       if (exportStats) {
-        // Update state + .env with export info
+        // Update state + .env
         if (existsSync(STATE_FILE) && exportStats.combined_file) {
           const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
           state.telegramExportPath = exportStats.combined_file;
@@ -146,7 +183,6 @@ export const exportCommand = new Command("export")
           writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         }
 
-        // Save export path + self name to .env
         const envFile = join(MIRRORAI_HOME, ".env");
         let envContent = existsSync(envFile) ? readFileSync(envFile, "utf-8") : "";
 

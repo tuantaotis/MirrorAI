@@ -112,8 +112,8 @@ def format_size(size_bytes: int) -> str:
 
 
 async def export_telegram_chats(
-    phone: str,
     output_dir: str,
+    phone: str = "",
     limit: int = 5000,
     chat_filter: str = "all",
     session_dir: str = "",
@@ -122,7 +122,7 @@ async def export_telegram_chats(
 ) -> dict:
     """
     Export Telegram chat history to local JSON files.
-    User chỉ cần số điện thoại — OTP sẽ được gửi qua Telegram.
+    Lần đầu cần SĐT + OTP. Lần sau tự động dùng session đã lưu.
     """
     try:
         from telethon import TelegramClient
@@ -168,19 +168,37 @@ async def export_telegram_chats(
 
     # ── Step 1: Connect ──
     print_step(1, 5, "Kết nối Telegram...")
-    masked_phone = phone[:4] + "***" + phone[-3:]
-    print_status("📱", f"Số điện thoại: {masked_phone}")
-    print_status("🔐", "Session: " + ("đã lưu (không cần OTP)" if session_path.with_suffix(".session").exists() else "mới (sẽ gửi OTP)"))
 
-    logger.info(f"Connecting: {masked_phone}")
+    session_exists = session_path.with_suffix(".session").exists()
 
     client = TelegramClient(str(session_path), api_id, api_hash)
 
-    if not session_path.with_suffix(".session").exists():
+    if session_exists:
+        print_status("🔐", "Session đã lưu — đăng nhập tự động...")
+        logger.info("Using existing session")
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            # Session hết hạn → cần login lại
+            print_status("⚠", "Session hết hạn — cần đăng nhập lại")
+            if not phone:
+                print_status("✗", "Cần SĐT: mirrorai export --phone +84...")
+                sys.exit(1)
+            print_status("📩", "Mã OTP sẽ gửi qua Telegram app...")
+            print()
+            await client.start(phone=phone)
+        else:
+            print_status("✅", "Đã kết nối (không cần OTP)")
+    else:
+        if not phone:
+            print_status("✗", "Lần đầu cần SĐT: mirrorai export --phone +84...")
+            sys.exit(1)
+        masked_phone = phone[:4] + "***" + phone[-3:]
+        print_status("📱", f"Số điện thoại: {masked_phone}")
         print_status("📩", "Mã OTP sẽ gửi qua Telegram app...")
         print()
-
-    await client.start(phone=phone)
+        logger.info(f"First login: {masked_phone}")
+        await client.start(phone=phone)
 
     me = await client.get_me()
     self_name = f"{me.first_name or ''} {me.last_name or ''}".strip()
@@ -417,7 +435,7 @@ async def export_telegram_chats(
 
 def main():
     parser = argparse.ArgumentParser(description="MirrorAI Telegram Auto Exporter")
-    parser.add_argument("--phone", required=True, help="Phone number (+84...)")
+    parser.add_argument("--phone", default="", help="Phone number (+84...) — chỉ cần lần đầu")
     parser.add_argument("--output", default=os.path.expanduser("~/.mirrorai/data/exports"), help="Output directory")
     parser.add_argument("--limit", default=5000, type=int, help="Max messages per chat")
     parser.add_argument("--filter", default="all", choices=["all", "private", "group"], help="Chat type filter")
@@ -429,8 +447,8 @@ def main():
 
     asyncio.run(
         export_telegram_chats(
-            phone=args.phone,
             output_dir=args.output,
+            phone=args.phone,
             limit=args.limit,
             chat_filter=args.filter,
             session_dir=args.session_dir,
